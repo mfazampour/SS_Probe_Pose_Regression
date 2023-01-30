@@ -1,2 +1,7 @@
 /config_run.yml
 /packages.txt
+results/
+results_old/
+speckle_noise_test.py
+.vscode/
+__pycache__/
