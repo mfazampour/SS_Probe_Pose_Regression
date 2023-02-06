@@ -46,12 +46,16 @@ sigma_0_dict =              {2: 0.1,  3: 0.0, 4: 0.01, 6: 0.3,  8: 0.3, 9: 0.0, 
 
 
 def map_dict_to_array(dictionary, arr):
-    k = torch.tensor(list(dictionary.keys()))
-    v = torch.tensor(list(dictionary.values()))
-    mapping_ar = torch.zeros(k.max() + 1, dtype=torch.float32)
-    mapping_ar[k] = v
+    return torch.tensor(np.vectorize(dictionary.get)(arr).astype('float32')).to(device='cuda')
 
-    return mapping_ar[arr].to(device='cuda')
+    # k = torch.tensor(list(dictionary.keys()))
+    # v = torch.tensor(list(dictionary.values()))
+    # mapping_ar = torch.zeros(k.max() + 1, dtype=torch.float32)
+    # mapping_ar[k] = v
+
+    # mapping_arr = [dictionary[k] for k in arr]
+
+    # return mapping_ar[arr].to(device='cuda')
 
 
 def plot_fig(fig, fig_name, grayscale, save_dir):
