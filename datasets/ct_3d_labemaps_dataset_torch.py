@@ -4,7 +4,6 @@ from torch.utils.data import Dataset, DataLoader
 import os
 import nibabel as nib
 import cv2
-# import pytorch_lightning as pl
 from torch.utils.data import random_split
 # from PIL import Image
 
@@ -20,9 +19,9 @@ where the keys are the volume names and the values are the 3D volume data
 represented as numpy arrays. The data loader returns a randomly selected 
 2D slice from each volume, along with the name of the volume the slice came from. '''
 
-class CT3DLabelmapsDataset(Dataset):
+class CT3DLabelmapDataset(Dataset):
     def __init__(self, params):
-        # self.device = params.device
+        self.params = params
         self.n_classes = params.n_classes
 
         self.base_folder_data = params.base_folder_data_path
@@ -52,11 +51,9 @@ class CT3DLabelmapsDataset(Dataset):
     def __len__(self):
         return self.total_slices
 
-
-    @classmethod
-    def preprocess(cls, img, mask):
+    def preprocess(self, img, mask):
         if mask:
-            img = np.where(img != 4, 0, 1)
+            img = np.where(img != self.params.pred_label, 0, 1)
 
         return img      #.astype('float64')
 
@@ -73,13 +70,13 @@ class CT3DLabelmapsDataset(Dataset):
         return slice, mask, str(vol_nr) + '_' + str(self.slice_indices[idx])
 
 
-class CT3DLabelmapsDataLoader():
+class CT3DLabelmapDataLoader():
     def __init__(self, params):
         super().__init__()
         self.params = params
 
     def train_dataloader(self):
-        full_dataset = CT3DLabelmapsDataset(self.params)
+        full_dataset = CT3DLabelmapDataset(self.params)
         train_size = int(0.8 * len(full_dataset))
         val_size = len(full_dataset) - train_size
 

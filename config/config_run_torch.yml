@@ -1,0 +1,41 @@
+exp_name : inner+outer_
+project_name : cactuss_end2end-Segmentation
+base_folder_data_path: /home/aorta-scan/dani/data/CTs+labelmaps_cropped/
+# base_folder_data_path: /home/aorta-scan/dani/data/CTs+labelmaps_cropped_catheter/
+labelmap_path : /ct_labelmap2/ #
+output_path : /home/aorta-scan/dani/repos/cactuss_end2end
+
+module : segmentationUnetSim_torch.SegmentationSim
+
+outer_model : UNet
+inner_model : us_rendering_model_torch.UltrasoundRendering
+
+dataset : ct_3d_labemaps_dataset_torch.CT3DLabelmapDataset
+datamodule : ct_3d_labemaps_dataset_torch.CT3DLabelmapDataLoader
+n_classes : 1
+pred_label : 6    # 4-vessel, 6-kidney, 11-liver
+
+num_workers : 1 #24
+
+
+batch_size : 1
+global_learning_rate: 0.005 # 5e-3
+inner_model_learning_rate: 0.0005
+outer_model_learning_rate: 0.005 
+
+# early_stopping_metric : val_loss_epoch  #val_loss  #default
+# save_top_k : 1
+min_epochs : 1
+max_epochs : 200
+early_stopping_patience : 2
+validate_every_n_steps : 1 #default is 50
+
+# log_interval : 100 #default
+# limit_train : 1.0 #1.0 default
+# limit_val : 1.0
+
+on_polyaxon : False
+logging : True
+polyaxon_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped/
+
+

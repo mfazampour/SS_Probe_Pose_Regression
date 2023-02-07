@@ -19,10 +19,10 @@ from datetime import datetime
 import sys
 import numpy as np
 
-try:
-    from utils.plx_logger import PolyaxonLogger
-except ImportError:
-    assert 'Import Error'
+# try:
+#     from utils.plx_logger import PolyaxonLogger
+# except ImportError:
+#     assert 'Import Error'
 
 RANDOM_SEED = False
 torch.use_deterministic_algorithms(True, warn_only=True)

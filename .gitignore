@@ -2,6 +2,10 @@
 /packages.txt
 results/
 results_old/
+results_test/
+checkpoints/
+wandb/
+log_dir/
 speckle_noise_test.py
 .vscode/
 __pycache__/

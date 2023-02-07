@@ -1,0 +1,39 @@
+base_folder_data_path: /home/aorta-scan/dani/data/CTs+labelmaps_cropped/
+labelmap_path : /ct_labelmap2/ #labelmap_with_catheter_meshes_f
+#input_labelmap_path : /aorta_catheter_labelmaps/  #labelmap_aorta_catheter
+#save_dir_us_sim : /us_simulation/rotations/
+#save_dir_us_sim_imgs : imgs/
+#save_dir_us_sim_masks : masks/
+#splines_file : /splines_3dir.csv
+#nr_imgs: 100
+#nr_labelmap: 100
+
+
+module : segmentationUnetSim.Segmentation
+
+outer_model : unet_2d.OriginalUNet
+inner_model : us_rendering.UltrasoundRendering
+
+dataset : ct_3d_labemaps_dataset.CT3DLabelmapsDataset
+datamodule : ct_3d_labemaps_dataset.CT3DLabelmapsModule
+num_workers : 1 #24
+
+n_classes : 1
+# data_root : /home/aorta-scan/dani/data/CTs+labelmaps_cropped/
+output_path : /home/aorta-scan/dani/repos/cactuss_end2end
+
+batch_size : 1
+learning_rate: 0.005 # 5e-3
+
+early_stopping_metric : val_loss_epoch  #val_loss  #default
+save_top_k : 1
+min_epochs : 100
+max_epochs : 200
+num_sanity_val_steps : 0 #default 2
+log_interval : 100 #default
+log_every_n_steps : 10 #default is 50
+limit_train : 1.0 #1.0 default
+limit_val : 1.0
+on_polyaxon : False
+
+

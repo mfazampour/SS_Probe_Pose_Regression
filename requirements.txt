@@ -1,0 +1,14 @@
+polyaxon-client
+opencv-python
+ConfigArgParse
+torchsummary
+wandb
+matplotlib
+tensorboardX
+monai
+nibabel
+scikit-image
+gdown
+lmdb
+pandas
+einops
