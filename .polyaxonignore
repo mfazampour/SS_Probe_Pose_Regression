@@ -19,3 +19,8 @@ var
 ./log_dir
 ./.vscode
 ./__pycache__
+./cut/checkpoints
+./cut/datasets
+./cut/docs
+./cut/__pycache__
+

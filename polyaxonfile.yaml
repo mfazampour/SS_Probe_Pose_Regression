@@ -40,4 +40,5 @@ environment:
 
 run:
   cmd:
-  - python3 ./full_run_torch.py -c config/config_run_torch.yml --on_polyaxon
+  - python3 ./full_run_discr_torch.py -c config/config_run_discr_torch.yml --on_polyaxon
+  # - python3 ./full_run_torch.py -c config/config_run_torch.yml --on_polyaxon

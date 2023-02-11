@@ -44,7 +44,7 @@ def train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader)
     val_loader = dataloader.val_dataloader()
 
     early_stopping = EarlyStopping(patience=hparams.early_stopping_patience, 
-                                    ckpt_save_path = f'{hparams.output_path}/checkpoints/best_checkpoint_{hparams.exp_name}.pt', verbose=True)
+                                    ckpt_save_path = f'{hparams.output_path}/best_checkpoint_{hparams.exp_name}.pt', verbose=True)
 
     # to track the training loss as the model trains
     train_losses = []

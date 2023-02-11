@@ -49,7 +49,7 @@ def train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetClass, 
     module = ModuleClass(hparams, outer_model, inner_model)
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f"{hparams.output_path}/checkpoints/",
+        dirpath=f"{hparams.output_path}/",
         save_top_k=hparams.save_top_k,
         save_last=True,
         verbose=True,

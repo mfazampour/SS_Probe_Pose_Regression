@@ -8,22 +8,15 @@ from PIL import Image
 from torchvision import transforms
 import torch.nn.functional as F
 
-# 2 - lung; 3 - fat; 4 - vessel; 6 - kidney; 8 - muscle; 11 - liver; 12 - soft tissue; 13 - bone; 9 - background
+# 2 - lung; 3 - fat; 4 - vessel; 6 - kidney; 8 - muscle; 9 - background; 10 - catheter; 11 - liver; 12 - soft tissue; 13 - bone; 
 # Default Parameters from: https://github.com/Blito/burgercpp/blob/master/examples/ircad11/liver.scene , labels 9 and 12 from the USHybridSim_auto_generate_imgs_masks_param2_3Splines.iws file
-# indexes = 2,3,4,6,8,9,11,12,13
+# indexes = 2,3,4,6,8,9,10,11,12,13
+acoustic_imped_def_dict =torch.tensor([0.0004, 1.38, 1.49, 1.62, 1.62, 0.3, 0.01, 1.65, 1.63, 7.8], requires_grad=True).to(device='cuda')    # Z in MRayl
+attenuation_def_dict = torch.tensor([1.64, 0.63, 0.18, 1.0, 1.09, 0.54, 0.54, 0.7, 0.54, 5.0], requires_grad=True).to(device='cuda')    # alpha in dB cm^-1 at 1 MHz
 
-# acoustic_imped_def_dict = 10 * torch.rand(9, requires_grad=True).to(device='cuda')  
-# attenuation_def_dict = 10 * torch.rand(9, requires_grad=True).to(device='cuda')  
-# mu_0_def_dict = torch.rand(9, requires_grad=True).to(device='cuda') 
-# mu_1_def_dict = torch.rand(9, requires_grad=True).to(device='cuda') 
-# sigma_0_def_dict = torch.rand(9, requires_grad=True).to(device='cuda')
-
-acoustic_imped_def_dict = torch.tensor([0.0004, 1.38, 1.61, 1.62, 1.62, 0.3, 1.65, 1.63, 7.8], requires_grad=True).to(device='cuda')    # Z in MRayl
-attenuation_def_dict = torch.tensor([1.64, 0.63, 0.18, 1.0, 1.09, 0.54, 0.7, 0.54, 5.0], requires_grad=True).to(device='cuda')    # alpha in dB cm^-1 at 1 MHz
-mu_0_def_dict = torch.tensor([0.78, 0.5, 0.001, 0.4, 0.4, 0.3, 0.19, 0.64, 0.78], requires_grad=True).to(device='cuda') # mu_0 - scattering_density
-mu_1_def_dict = torch.tensor([0.56, 0.5, 0.0, 0.6, 0.6, 0.2, 1.0, 0.64, 0.56], requires_grad=True).to(device='cuda') # mu_1 - scattering_mu
-sigma_0_def_dict = torch.tensor([0.1, 0.0, 0.01, 0.3, 0.3, 0.0, 0.24, 0.1, 0.1], requires_grad=True).to(device='cuda') # sigma_0 - scattering_sigma
-
+mu_0_def_dict = torch.tensor([0.78, 0.5, 0.0, 0.4, 0.4, 0.3, 1.0, 0.19, 0.64, 0.78], requires_grad=True).to(device='cuda') # mu_0 - scattering_density
+mu_1_def_dict = torch.tensor([0.56, 0.5, 0.0, 0.6, 0.6, 0.2, 1.0, 1.0, 0.64, 0.56], requires_grad=True).to(device='cuda') # mu_1 - scattering_mu
+sigma_0_def_dict = torch.tensor([0.1, 0.0, 0.0, 0.3, 0.3, 0.0, 1.0, 0.24, 0.1, 0.1], requires_grad=True).to(device='cuda') # sigma_0 - scattering_sigma
 
 alpha_coeff_boundary_map = 0.1
 beta_coeff_scattering = 10
@@ -57,7 +50,6 @@ class UltrasoundRendering(torch.nn.Module):
         self.mu_0_dict = torch.nn.Parameter(mu_0_def_dict)
         self.mu_1_dict = torch.nn.Parameter(mu_1_def_dict)
         self.sigma_0_dict = torch.nn.Parameter(sigma_0_def_dict)
-        self.labels = ["lung", "fat", "vessel", "kidney", "muscle", "background", "liver", "soft tissue", "bone"]
 
         # self.acoustic_impedance_dict = acoustic_imped_def_dict
         # self.attenuation_dict = attenuation_def_dict
@@ -68,7 +60,7 @@ class UltrasoundRendering(torch.nn.Module):
 
 
     def map_dict_to_array(self, dictionary, arr):
-        mapping_keys = torch.tensor([2, 3, 4, 6, 8, 9, 11, 12, 13], dtype=torch.long).to(device='cuda')
+        mapping_keys = torch.tensor([2, 3, 4, 6, 8, 9, 10, 11, 12, 13], dtype=torch.long).to(device='cuda')
         keys = torch.unique(arr)
         # print('keys: ', keys.requires_grad)
 
@@ -128,7 +120,7 @@ class UltrasoundRendering(torch.nn.Module):
     def rendering(self, H, W, z_vals=None, attenuation_medium_map=None, refl_map=None,
                     boundary_map=None, mu_0_map=None, mu_1_map=None, sigma_0_map=None):
 
-        
+        torch.manual_seed(2023)
         dists = torch.abs(z_vals[..., :-1, None] - z_vals[..., 1:, None])     # dists.shape=(W, H-1, 1)
         dists = dists.squeeze(-1)                                             # dists.shape=(W, H-1)
         dists = torch.cat([dists, dists[:, -1, None]], dim=-1)                 # dists.shape=(W, H)
