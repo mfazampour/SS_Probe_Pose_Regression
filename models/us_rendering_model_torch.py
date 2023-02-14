@@ -114,12 +114,12 @@ class UltrasoundRendering(torch.nn.Module):
         if torch.is_tensor(fig):
             # fig = fig.cpu().data.numpy()
             fig = fig.cpu().detach().numpy()
-        fig = np.rot90(fig, 3)
+        # fig = np.rot90(fig, 3)
 
         if grayscale:
-            plt.imshow(fig, cmap='gray', interpolation='nearest')
+            plt.imshow(fig, cmap='gray', vmin=0, vmax=1, interpolation='none', norm=None)
         else:
-            plt.imshow(fig, interpolation='none')
+            plt.imshow(fig, vmin=0, vmax=1, interpolation='none', norm=None)
         plt.colorbar()
         plt.savefig(save_dir + fig_name + '.png')
 
@@ -136,7 +136,12 @@ class UltrasoundRendering(torch.nn.Module):
         attenuation = torch.exp(-attenuation_medium_map * dists)
         attenuation_total = torch.cumprod(attenuation, dim=1, dtype=torch.float32, out=None)
 
-        attenuation_total = (attenuation_total - torch.min(attenuation_total)) / (torch.max(attenuation_total) - torch.min(attenuation_total))
+        gain_coeffs = np.linspace(1, 5, attenuation_total.shape[1])
+        gain_coeffs = np.tile(gain_coeffs, (attenuation_total.shape[0], 1))
+        gain_coeffs = torch.tensor(gain_coeffs).to(device='cuda') 
+        attenuation_total_TGC = attenuation_total * gain_coeffs
+
+        # attenuation_total = (attenuation_total - torch.min(attenuation_total)) / (torch.max(attenuation_total) - torch.min(attenuation_total))
 
         reflection_total = torch.cumprod(1. - refl_map * boundary_map, dim=1, dtype=torch.float32, out=None)
         reflection_total = reflection_total.squeeze(-1)
@@ -170,6 +175,15 @@ class UltrasoundRendering(torch.nn.Module):
         intensity_map = b + r
         intensity_map = intensity_map.squeeze()
         intensity_map = torch.clamp(intensity_map, 0, 1)
+
+
+        b2 = attenuation_total_TGC * psf_scatter_conv
+        r2 = attenuation_total_TGC * reflection_total * refl_map * border_convolution
+        intensity_map2 = b2 + r2
+        intensity_map2 = intensity_map2.squeeze()
+        # intensity_map = torch.clamp(intensity_map, 0, 1)
+
+
 
         return intensity_map, attenuation_total, reflection_total_plot, scatterers_map, scattering_probability, border_convolution, texture_noise, b, r
 
@@ -319,6 +333,8 @@ class UltrasoundRendering(torch.nn.Module):
         us_mask = Image.open('us_convex_mask.png')
         us_mask = us_mask.resize((ret_list[0].shape[0], ret_list[0].shape[1]))
         us_mask = transforms.ToTensor()(us_mask).squeeze().to(device='cuda')
+        us_mask = torch.where(us_mask > 0., torch.tensor(1., dtype=torch.float32).to(device='cuda'), torch.tensor(0., dtype=torch.float32).to(device='cuda'))
+
         self.intensity_map_masked = self.intensity_map  * torch.transpose(us_mask, 0, 1) #np.transpose(us_mask)
         # self.plot_fig(intensity_map_masked, "intensity_map_masked", True)
 

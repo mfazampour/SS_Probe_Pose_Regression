@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 from matplotlib import gridspec
 # import plotly.express as px
 from pytorch_lightning.callbacks import Callback
+from matplotlib.colors import NoNorm
 import torch
 import torchvision
 import wandb
@@ -17,7 +18,7 @@ import numpy as np
 EVERY_N = 100
 THRESHOLD = 0.5
 # top/last N items
-N = 10
+N = 16
 
 
 class Plotter(Callback):
@@ -50,23 +51,25 @@ class Plotter(Callback):
         spec = gridspec.GridSpec(rows, cols, fig, wspace=0, hspace=0)
         spec.tight_layout(fig)
         for idx, img in enumerate(imgs):
-            img = np.rot90(img.cpu().detach(), 3)
+            # img = np.rot90(img.cpu().detach(), 3)  #???
             if idx==2:  # prediction blended over the us_sim image
-                plt.subplot(spec[0, idx]).imshow(img, cmap='gray')
+                plt.subplot(spec[0, idx]).imshow(img, cmap='gray', interpolation='none', norm=None)
                 us_sim_img = np.rot90(imgs[1].cpu().detach(), 3)
-                plt.subplot(spec[0, idx]).imshow(us_sim_img, cmap='gray', alpha=0.4)
+                plt.subplot(spec[0, idx]).imshow(us_sim_img, cmap='gray', alpha=0.4, interpolation='none', norm=None)
             elif idx==0:    # original ct_slice
                 plt.subplot(spec[0, idx]).imshow(img)
             elif idx==1:    #us_sim
-                plt.subplot(spec[0, idx]).imshow(img, cmap='gray')
+                plt.subplot(spec[0, idx]).imshow(img, cmap='gray', interpolation='none', norm=None)
             else:   #gt_mask
-                plt.subplot(spec[0, idx]).imshow(img, cmap='gray')
+                plt.subplot(spec[0, idx]).imshow(img, cmap='gray', interpolation='none', norm=None)
             plt.axis('off')
+            plt.colorbar()
 
         plt.tight_layout()
         fig.subplots_adjust(wspace=0, hspace=0)
         # plt.savefig("/fig.png", bbox_inches='tight')
         # plt.show()
+        # imshow(data, cmap=plt.get_cmap('hot'), interpolation='nearest', vmin=0, vmax=1)
 
         return fig
 
