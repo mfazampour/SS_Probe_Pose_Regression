@@ -8,8 +8,8 @@ from PIL import Image
 from torchvision import transforms
 import torch.nn.functional as F
 
-# 2 - lung; 3 - fat; 4 - vessel; 6 - kidney; 8 - muscle; 11 - liver; 12 - soft tissue; 13 - bone; 9 - background
-# Default Parameters from: https://github.com/Blito/burgercpp/blob/master/examples/ircad11/liver.scene , labels 9 and 12 from the USHybridSim_auto_generate_imgs_masks_param2_3Splines.iws file
+# 2 - lung; 3 - fat; 4 - vessel; 6 - kidney; 8 - muscle; 9 - background; 11 - liver; 12 - soft tissue; 13 - bone; 
+# Default Parameters from: https://github.com/Blito/burgercpp/blob/master/examples/ircad11/liver.scene , labels 8, 9 and 12 from the USHybridSim_auto_generate_imgs_masks_param2_3Splines.iws file
 # indexes = 2,3,4,6,8,9,11,12,13
 
 # acoustic_imped_def_dict = 10 * torch.rand(9, requires_grad=True).to(device='cuda')  
@@ -17,16 +17,17 @@ import torch.nn.functional as F
 # mu_0_def_dict = torch.rand(9, requires_grad=True).to(device='cuda') 
 # mu_1_def_dict = torch.rand(9, requires_grad=True).to(device='cuda') 
 # sigma_0_def_dict = torch.rand(9, requires_grad=True).to(device='cuda')
-
-acoustic_imped_def_dict = torch.tensor([0.0004, 1.38, 1.61, 1.62, 1.62, 0.3, 1.65, 1.63, 7.8], requires_grad=True).to(device='cuda')    # Z in MRayl
-attenuation_def_dict = torch.tensor([1.64, 0.63, 0.18, 1.0, 1.09, 0.54, 0.7, 0.54, 5.0], requires_grad=True).to(device='cuda')    # alpha in dB cm^-1 at 1 MHz
-mu_0_def_dict = torch.tensor([0.78, 0.5, 0.001, 0.4, 0.4, 0.3, 0.19, 0.64, 0.78], requires_grad=True).to(device='cuda') # mu_0 - scattering_density
-mu_1_def_dict = torch.tensor([0.56, 0.5, 0.0, 0.6, 0.6, 0.2, 1.0, 0.64, 0.56], requires_grad=True).to(device='cuda') # mu_1 - scattering_mu
-sigma_0_def_dict = torch.tensor([0.1, 0.0, 0.01, 0.3, 0.3, 0.0, 0.24, 0.1, 0.1], requires_grad=True).to(device='cuda') # sigma_0 - scattering_sigma
+                                    #    2        3    4      6     8    9     11     12    13
+acoustic_imped_def_dict = torch.tensor([0.0004, 1.38, 1.61,  1.62, 1.62, 0.3,  1.65, 1.63, 7.8], requires_grad=True).to(device='cuda')    # Z in MRayl
+attenuation_def_dict =    torch.tensor([1.64,   0.63, 0.18,  1.0,  1.09, 0.54, 0.7,  0.54, 5.0], requires_grad=True).to(device='cuda')    # alpha in dB cm^-1 at 1 MHz
+mu_0_def_dict =           torch.tensor([0.78,   0.5,  0.001, 0.4,  0.4,  0.3,  0.19, 0.64, 0.78], requires_grad=True).to(device='cuda') # mu_0 - scattering_density
+mu_1_def_dict =           torch.tensor([0.56,   0.5,  0.0,   0.6,  0.6,  0.2,  0.5,  0.64, 0.56], requires_grad=True).to(device='cuda') # mu_1 - scattering_mu
+sigma_0_def_dict =        torch.tensor([0.1,    0.0,  0.01,  0.3,  0.3,  0.0,  0.24, 0.1,  0.1], requires_grad=True).to(device='cuda') # sigma_0 - scattering_sigma
 
 
 alpha_coeff_boundary_map = 0.1
 beta_coeff_scattering = 10
+TGC = 4
 
 
 def gaussian_kernel(size: int, mean: float, std: float):
@@ -119,7 +120,7 @@ class UltrasoundRendering(torch.nn.Module):
         if grayscale:
             plt.imshow(fig, cmap='gray', vmin=0, vmax=1, interpolation='none', norm=None)
         else:
-            plt.imshow(fig, vmin=0, vmax=1, interpolation='none', norm=None)
+            plt.imshow(fig, interpolation='none', norm=None)
         plt.colorbar()
         plt.savefig(save_dir + fig_name + '.png')
 
@@ -136,10 +137,10 @@ class UltrasoundRendering(torch.nn.Module):
         attenuation = torch.exp(-attenuation_medium_map * dists)
         attenuation_total = torch.cumprod(attenuation, dim=1, dtype=torch.float32, out=None)
 
-        gain_coeffs = np.linspace(1, 5, attenuation_total.shape[1])
+        gain_coeffs = np.linspace(1, TGC, attenuation_total.shape[1])
         gain_coeffs = np.tile(gain_coeffs, (attenuation_total.shape[0], 1))
         gain_coeffs = torch.tensor(gain_coeffs).to(device='cuda') 
-        attenuation_total_TGC = attenuation_total * gain_coeffs
+        attenuation_total = attenuation_total * gain_coeffs
 
         # attenuation_total = (attenuation_total - torch.min(attenuation_total)) / (torch.max(attenuation_total) - torch.min(attenuation_total))
 
@@ -177,10 +178,10 @@ class UltrasoundRendering(torch.nn.Module):
         intensity_map = torch.clamp(intensity_map, 0, 1)
 
 
-        b2 = attenuation_total_TGC * psf_scatter_conv
-        r2 = attenuation_total_TGC * reflection_total * refl_map * border_convolution
-        intensity_map2 = b2 + r2
-        intensity_map2 = intensity_map2.squeeze()
+        # b2 = attenuation_total_TGC * psf_scatter_conv
+        # r2 = attenuation_total_TGC * reflection_total * refl_map * border_convolution
+        # intensity_map2 = b2 + r2
+        # intensity_map2 = intensity_map2.squeeze()
         # intensity_map = torch.clamp(intensity_map, 0, 1)
 
 
@@ -245,7 +246,7 @@ class UltrasoundRendering(torch.nn.Module):
 
 
     def forward(self, ct_slice):
-        # self.plot_fig(ct_slice, "ct_slice", False)
+        self.plot_fig(ct_slice, "ct_slice", False)
         
         # self.acoustic_impedance_dict.register_hook(lambda grad: print(grad))
         # self.attenuation_dict.register_hook(lambda grad: print(grad))
@@ -336,7 +337,9 @@ class UltrasoundRendering(torch.nn.Module):
         us_mask = torch.where(us_mask > 0., torch.tensor(1., dtype=torch.float32).to(device='cuda'), torch.tensor(0., dtype=torch.float32).to(device='cuda'))
 
         self.intensity_map_masked = self.intensity_map  * torch.transpose(us_mask, 0, 1) #np.transpose(us_mask)
-        # self.plot_fig(intensity_map_masked, "intensity_map_masked", True)
+        self.intensity_map_masked = torch.rot90(self.intensity_map_masked, 3, [0, 1])
+
+        self.plot_fig(self.intensity_map_masked, "intensity_map_masked2", True)
 
         return self.intensity_map_masked
 

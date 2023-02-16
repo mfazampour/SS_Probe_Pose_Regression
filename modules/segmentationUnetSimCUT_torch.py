@@ -4,7 +4,6 @@ import torchvision.transforms.functional as F
 import monai
 from cut.models.networks import GANLoss
 from torch.optim import lr_scheduler
-import torchvision.transforms as T
 # from cut.models.base_model import BaseModel
 # torch.set_printoptions(profile="full")
 THRESHOLD = 0.5
@@ -95,17 +94,16 @@ class SegmentationSim(torch.nn.Module):
 
         input, label, file_name = batch_data_ct[0].to(self.params.device), batch_data_ct[1].to(self.params.device), batch_data_ct[2]
         # print('FILENAME: ' + file_name)
-        label = F.resize(label, (128,128)).float().unsqueeze(0)
+        # label = F.resize(label, (128,128)).float().unsqueeze(0)
 
-        # self.seg_optimizer.zero_grad()
+        self.seg_optimizer.zero_grad()
         # self.USRenderingModel.plot_fig(input.squeeze(), "input", False)
         us_sim = self.USRenderingModel(input.squeeze()) 
         # self.USRenderingModel.plot_fig(us_sim, "us_sim", True)
         
 
         # us_sim = us_sim.float()
-        transform = T.ToPILImage()
-        us_sim = transform(us_sim).convert('RGB')
+
         # us_sim_resized = us_sim.resize((128, 128))
         # us_sim_resized = us_sim_resized.convert('RGB')
         # us_sim_resized = F.resize(us_sim, (128,128)).float()

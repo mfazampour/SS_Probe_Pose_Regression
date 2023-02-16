@@ -30,7 +30,7 @@ environment:
       limits: 4
     memory:
       requests: 16000
-      limits: 32000 #64GB
+      limits: 32000 
     gpu:
       requests: 1
       limits: 1

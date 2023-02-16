@@ -27,14 +27,13 @@ from cut.models import create_model as cut_create_model
 from cut.models.networks import define_D
 from cut.options.cactussend2end_options import CACTUSSEnd2EndOptions
 from cut.util.visualizer import Visualizer as CUTVisualizer
-
-
- 
 # from cut.options.train_options import TrainOptions as TrainOptionsCUT
 import torchvision.transforms as transforms
 from torch.utils.data import random_split
+import torchvision.transforms as T
 
 MANUAL_SEED = False
+EPOCHS_INIT_CUT = 1
 # torch.use_deterministic_algorithms(True, warn_only=True)
 # COMMENT = f"################ UNET vessel segm ############################"
 # tb_logger = SummaryWriter('log_dir/cactuss_end2end')
@@ -44,15 +43,64 @@ MANUAL_SEED = False
 #     transforms.ToTensor(),
 #     transforms.Normalize((0.5,), (0.5,))
 # ])
+total_iters = 0 
+optimize_time = 0.1
+
+def train_cut(batch_data_ct, real_us_train_loader, inner_model, cut_model, epoch, train_dataset_real_us, dataloader_real_us_iterator, i, iter_data_time, epoch_iter):
+      # with torch.autograd.detect_anomaly():
+    step += 1
+    # us_rendered = module.us_rendering_forward(batch_data_ct=batch_data_ct)   # just getting the image, no gradients
+    ct_slice = batch_data_ct[0].to(hparams.device)
+    us_sim = inner_model(ct_slice.squeeze()) 
+    transform = T.ToPILImage()
+    us_rendered = transform(us_sim).convert('RGB')
+
+    try:
+        data_cut_real_us = next(dataloader_real_us_iterator)
+    except StopIteration:
+        dataloader_real_us_iterator = iter(real_us_train_loader)
+        data_cut_real_us = next(dataloader_real_us_iterator)
+    
+    real_us_batch_size = data_cut_real_us["A"].size(0)
+    total_iters += real_us_batch_size
+    epoch_iter += real_us_batch_size
+    
+    data_cut_rendered_us = train_dataset_real_us.transform(us_rendered)
+    data_cut_rendered_us = data_cut_rendered_us.unsqueeze(0)
+    data_cut_real_us['B'] = data_cut_rendered_us   # add cut_model.real_B
+    
+    optimize_start_time = time.time()
+    if epoch == opt_cut.epoch_count and i == 0:    #initialize only on epoch 1 
+        cut_model.data_dependent_initialize(data_cut_real_us)
+        cut_model.setup(opt_cut)               # regular setup: load and print networks; create schedulers
+        cut_model.parallelize()
+
+    cut_model.set_input(data_cut_real_us)  # unpack data from dataset and apply preprocessing
+    cut_model.optimize_parameters()   # calculate loss functions, get gradients, update network weights
+    optimize_time = (time.time() - optimize_start_time) / real_us_batch_size * 0.005 + 0.995 * optimize_time
+
+    iter_start_time = time.time() 
+    if total_iters % opt_cut.print_freq == 0:
+        t_data = iter_start_time - iter_data_time
+
+    #Print CUT results
+    if total_iters % opt_cut.display_freq == 0:   # display images and losses on wandb
+        cut_model.compute_visuals()
+        visualizer.display_current_results(cut_model.get_current_visuals(), epoch, None, wandb)
+        losses = cut_model.get_current_losses()
+        opt_cut.visualizer.print_current_losses(epoch, epoch_iter, losses, optimize_time, t_data, wandb)
+
+
+
+
+
+
 
 def train(hparams, opt_cut, ModuleClass, OuterModelClass, InnerModelClass, cut_model, CTDatasetLoader, real_us_dataset):
 
     if MANUAL_SEED: torch.manual_seed(2023)
 
     inner_model = InnerModelClass()
-    # discr_model = define_D(opt_cut.output_nc, opt_cut.ndf, opt_cut.netD, opt_cut.n_layers_D, 
-    #                     opt_cut.normD, opt_cut.init_type, opt_cut.init_gain, opt_cut.no_antialias, 
-    #                     opt_cut.gpu_ids, opt_cut)
 
 
     module = ModuleClass(hparams, opt_cut, OuterModelClass, inner_model)
@@ -65,14 +113,14 @@ def train(hparams, opt_cut, ModuleClass, OuterModelClass, InnerModelClass, cut_m
     train_loader_ct_labelmaps, train_dataset_ct_labelmaps, val_dataset_ct_labelmaps  = dataloader.train_dataloader()
     val_loader_ct_labelmaps = dataloader.val_dataloader()
 
-    dataset = real_us_dataset.dataset    # get the number of images in the dataset.
-    dataset_size = len(dataset)    # get the number of images in the dataset.
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])#, generator=Generator().manual_seed(0))
+    dataset_real_us = real_us_dataset.dataset    # get the number of images in the dataset.
+    dataset_size = len(dataset_real_us)    # get the number of images in the dataset.
+    train_size = int(0.8 * len(dataset_real_us))
+    val_size = len(dataset_real_us) - train_size
+    train_dataset_real_us, val_dataset_real_us = random_split(dataset_real_us, [train_size, val_size])#, generator=Generator().manual_seed(0))
 
-    real_us_train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=opt_cut.batch_size, shuffle=True, drop_last=True, num_workers=hparams.num_workers)
-    real_us_val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=opt_cut.batch_size, shuffle=False, drop_last=False, num_workers=hparams.num_workers)
+    real_us_train_loader = torch.utils.data.DataLoader(train_dataset_real_us, batch_size=opt_cut.batch_size, shuffle=True, drop_last=True, num_workers=hparams.num_workers)
+    # real_us_val_loader = torch.utils.data.DataLoader(val_dataset_real_us, batch_size=opt_cut.batch_size, shuffle=False, drop_last=False, num_workers=hparams.num_workers)
 
 
 
@@ -83,61 +131,122 @@ def train(hparams, opt_cut, ModuleClass, OuterModelClass, InnerModelClass, cut_m
     G_train_losses, D_train_losses, D_real_train_losses, D_fake_train_losses = ([] for i in range(4))
     G_val_losses, D_val_losses, D_real_val_losses, D_fake_val_losses = ([] for i in range(4))
 
-    total_iters = 0 
-    optimize_time = 0.1
+
     for epoch in range(1, hparams.max_epochs + 1):
-        epoch_iter = 0 
-        opt_cut.visualizer.reset() 
-        iter_data_time = time.time()    # timer for data loading per iteration
 
-        dataloader_real_us_iterator = iter(real_us_train_loader)
+            epoch_iter = 0 
+            opt_cut.visualizer.reset() 
+            iter_data_time = time.time()    # timer for data loading per iteration
 
-        module.outer_model.train()
-        inner_model.train()
-        # discr_model.train()
-        step = 0
-        for i, batch_data_ct in enumerate(train_loader_ct_labelmaps):
+            dataloader_real_us_iterator = iter(real_us_train_loader)
 
-            with torch.autograd.detect_anomaly():
+            # module.outer_model.train()
+            # inner_model.train()
+            # discr_model.train()
+            step = 0
+            for i, batch_data_ct in enumerate(train_loader_ct_labelmaps):
+                if epoch < EPOCHS_INIT_CUT:
+                    #init CUT
+                    train_cut(batch_data_ct, real_us_train_loader, inner_model, cut_model, epoch, train_dataset_real_us, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
 
-                step += 1
-                us_sim = module.us_rendering_forward(batch_data_ct=batch_data_ct)
+                else:
+                    #Train US Renderer + SEG NET
+                    module.outer_model.train()
+                    inner_model.train()
+                    # step = 0
+                    # for batch_data_ct in train_loader:
+                    # step += 1
 
-                try:
-                    data2 = next(dataloader_real_us_iterator)
-                except StopIteration:
-                    dataloader_real_us_iterator = iter(real_us_train_loader)
-                    data2 = next(dataloader_real_us_iterator)
+                    train_seg_loss, us_rendered = module.training_step(batch_data_ct)
+                    train_seg_loss.backward()
+                    # log_model_gradients(inner_model, step)
+                    module.optimizer.step()
+
+                    train_cut(batch_data_ct, real_us_train_loader, inner_model, cut_model, epoch, train_dataset_real_us, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
+
+                    print(f"{step}/{len(train_dataset_ct_labelmaps) // train_loader_ct_labelmaps.batch_size}, train_loss: {train_seg_loss.item():.4f}")
+                    if hparams.logging: wandb.log({"train_loss_step": train_seg_loss.item()}, step=step)
+
+                    train_losses.append(train_seg_loss.item())
+
+                    #SEG NET VALIDATION
+                    if (epoch + 1) % hparams.validate_every_n_steps == 0:
+                        module.outer_model.eval()
+                        inner_model.eval()
+                        val_step = 0
+                        with torch.no_grad():
+                            for val_batch_data_ct in val_loader_ct_labelmaps:
+                                val_step += 1
+
+                                val_loss, dict = module.validation_step(val_batch_data_ct, epoch)
+                                print(f"{val_step}/{len(val_dataset_ct_labelmaps) // val_loader_ct_labelmaps.batch_size}, val_loss: {val_loss.item():.4f}")
+                                if hparams.logging: wandb.log({"val_loss_step": val_loss.item()})
+
+                                valid_losses.append(val_loss.item())
+                                plotter.validation_batch_end(dict)
+                        
+                        #STOPPING CRITERION for the FULL Training - infere us_real imgs through the seg net
+                        cut_model.eval()
+                        # run inference
+
+                        #get real_us_test_img and real_us_test_img_label
+                        with torch.no_grad():
+                            for batch_data_real_us_test in train_loader_ct_labelmaps:
+                                real_us_test_img, real_us_test_img_label = batch_data_real_us_test[0], batch_data_real_us_test[1]
+                                reconstructed_us = cut_model.netG(real_us_test_img)
+                                # self.fake_B = reconstructed_us[:self.real_A.size(0)] #???
+                                # cut_model.forward()
+                                cut_model.compute_visuals()
+                                visuals = cut_model.get_current_visuals()  # get image results   for label, image in visuals.items():
+                                output_cut = visuals['fake_B']
+
+                                stop_criterion_loss, seg_pred  = module.seg_net_forward(reconstructed_us, real_us_test_img_label)
+
+
+
+
+
+            # calculate average loss over an epoch
+            train_loss = np.average(train_losses)
+            valid_loss = np.average(valid_losses)
+            avg_train_losses.append(train_loss)
+            avg_valid_losses.append(valid_loss)
+            
+            epoch_len = len(str(hparams.max_epochs))
+            print(f'[{epoch:>{epoch_len}}/{hparams.max_epochs:>{epoch_len}}] ' +
+                        f'train_loss_epoch: {train_loss:.5f} ' +
+                        f'valid_loss_epoch: {valid_loss:.5f}')
+
+            if hparams.logging: wandb.log({"train_loss_epoch": train_loss, "epoch": epoch})
+            if hparams.logging: wandb.log({"val_loss_epoch": valid_loss, "epoch": epoch})
+
+            if hparams.logging: plotter.validation_epoch_end()
+            print(f"--------------- END VAL ------------")
+            
+            # early_stopping needs the validation loss to check if it has decresed, 
+            # and if it has, it will make a checkpoint of the current model
+            if(epoch > hparams.min_epochs):
+                early_stopping(stop_criterion_loss, epoch, module)
+            
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
+            
+            # clear lists to track next epoch
+            train_losses = []
+            valid_losses = []
+
+
                 
-                iter_start_time = time.time() 
-                if total_iters % opt_cut.print_freq == 0:
-                    t_data = iter_start_time - iter_data_time
-                
-                real_us_batch_size = data2["A"].size(0)
-                total_iters += real_us_batch_size
-                epoch_iter += real_us_batch_size
-                
-                # us_sim.unsqueeze_(0)
-                # us_sim = us_sim.repeat(3, 1, 1)     #make it RGB for the ransform to work
-                B = dataset.transform(us_sim)
-                B = B.unsqueeze(0)
-                data2['B'] = B   # add cut_model.real_B
-                
-                optimize_start_time = time.time()
-                if epoch == opt_cut.epoch_count and i == 0:    #initialize only on epoch 1 
-                    cut_model.data_dependent_initialize(data2)
-                    cut_model.setup(opt_cut)               # regular setup: load and print networks; create schedulers
-                    cut_model.parallelize()
+    print(f'train completed, avg_train_losses: {avg_train_losses:.4f} avg_valid_losses: {avg_valid_losses}' +
+            f'best val_loss: {early_stopping.val_loss_min} at best_epoch: {early_stopping.best_epoch}')
 
-                cut_model.set_input(data2)  # unpack data from dataset and apply preprocessing
-                cut_model.optimize_parameters()   # calculate loss functions, get gradients, update network weights
-                optimize_time = (time.time() - optimize_start_time) / real_us_batch_size * 0.005 + 0.995 * optimize_time
 
-            if total_iters % opt_cut.display_freq == 0:   # display images on visdom and save images to a HTML file
-                cut_model.compute_visuals()
-                visualizer.display_current_results(cut_model.get_current_visuals(), epoch, None, wandb)
-                losses = cut_model.get_current_losses()
-                opt_cut.visualizer.print_current_losses(epoch, epoch_iter, losses, optimize_time, t_data, wandb)
+
+
+
+
+
 
 
             # log_model_gradients(inner_model, step)

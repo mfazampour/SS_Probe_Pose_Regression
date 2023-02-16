@@ -46,6 +46,23 @@ class SegmentationSim(torch.nn.Module):
                 
         return dict
 
+    def seg_net_forward(self, input, label):
+        output = self.outer_model(input)
+        loss = self.loss_function(output, label)
+
+        return loss, output    
+
+    def us_rendering_forward(self, batch_data_ct):
+
+        input, label, file_name = batch_data_ct[0].to(self.params.device), batch_data_ct[1].to(self.params.device), batch_data_ct[2]
+
+        # self.seg_optimizer.zero_grad()
+        # self.USRenderingModel.plot_fig(input.squeeze(), "input", False)
+        us_sim = self.USRenderingModel(input.squeeze()) 
+        # self.USRenderingModel.plot_fig(us_sim, "us_sim", True)
+        
+        return us_sim
+
 
     def step(self, input, label):
         # print('STEPP')
@@ -74,7 +91,7 @@ class SegmentationSim(torch.nn.Module):
         self.optimizer.zero_grad()
         loss, us_sim, output = self.step(input, label)
 
-        return loss
+        return loss, us_sim
     
 
     def validation_step(self, batch_data, epoch, batch_idx=None):
