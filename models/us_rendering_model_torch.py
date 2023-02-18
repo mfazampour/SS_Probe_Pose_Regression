@@ -246,7 +246,7 @@ class UltrasoundRendering(torch.nn.Module):
 
 
     def forward(self, ct_slice):
-        self.plot_fig(ct_slice, "ct_slice", False)
+        # self.plot_fig(ct_slice, "ct_slice", False)
         
         # self.acoustic_impedance_dict.register_hook(lambda grad: print(grad))
         # self.attenuation_dict.register_hook(lambda grad: print(grad))
@@ -316,9 +316,9 @@ class UltrasoundRendering(torch.nn.Module):
 
         self.intensity_map  = ret_list[0]
 
-        result_list = ["intensity_map", "attenuation_total", "reflection_total", 
-                        "scatters_map", "scattering_probability", "border_convolution", 
-                        "texture_noise", "b", "r"]
+        # result_list = ["intensity_map", "attenuation_total", "reflection_total", 
+        #                 "scatters_map", "scattering_probability", "border_convolution", 
+        #                 "texture_noise", "b", "r"]
 
         # for k in range(len(ret_list)):
         #     result_np = ret_list[k]
@@ -339,7 +339,7 @@ class UltrasoundRendering(torch.nn.Module):
         self.intensity_map_masked = self.intensity_map  * torch.transpose(us_mask, 0, 1) #np.transpose(us_mask)
         self.intensity_map_masked = torch.rot90(self.intensity_map_masked, 3, [0, 1])
 
-        self.plot_fig(self.intensity_map_masked, "intensity_map_masked2", True)
+        # self.plot_fig(self.intensity_map_masked, "intensity_map_masked2", True)
 
         return self.intensity_map_masked
 

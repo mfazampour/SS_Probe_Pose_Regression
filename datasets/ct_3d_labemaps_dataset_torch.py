@@ -1,17 +1,11 @@
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-
+import torch
 import os
 import nibabel as nib
 import cv2
 from torch.utils.data import random_split
 # from PIL import Image
-
-
-SIZE_W = 256
-SIZE_H = 256
-
-
 
 
 ''' This data loader is designed to work with a dictionary of volumes,
@@ -24,36 +18,44 @@ class CT3DLabelmapDataset(Dataset):
         self.params = params
         self.n_classes = params.n_classes
 
-        self.base_folder_data = params.base_folder_data_path
+        self.base_folder_data_imgs = params.base_folder_data_path
+        self.base_folder_data_masks = params.base_folder_mask_path
         self.labelmap_path = params.labelmap_path
 
-        self.sub_folder_CT = [sub_f for sub_f in sorted(os.listdir(self.base_folder_data))]
-        self.full_labelmap_path = [self.base_folder_data + s + self.labelmap_path for s in self.sub_folder_CT]
+        self.sub_folder_CT = [sub_f for sub_f in sorted(os.listdir(self.base_folder_data_imgs))]
+        self.full_labelmap_path_imgs = [self.base_folder_data_imgs + s + self.labelmap_path for s in self.sub_folder_CT]
+        self.full_labelmap_path_masks = [self.base_folder_data_masks + s + self.labelmap_path for s in self.sub_folder_CT]
 
-        self.slice_indices = []
-        # self.volume_indices = {}
-        self.volume_indices = []
-        self.total_slices = 0
-        self.volumes = []
+        self.slice_indices, self.volume_indices, self.total_slices, self.volumes = self.read_volumes(self.full_labelmap_path_imgs)
+        self.mask_slice_indices, self.mask_volume_indices, self.mask_total_slices, self.mask_volumes = self.read_volumes(self.full_labelmap_path_masks)
 
 
-        for idx, folder in enumerate(self.full_labelmap_path):
+    def __len__(self):
+        return self.total_slices   #// 100    #for debugging
+
+    def read_volumes(self, full_labelmap_path):
+        slice_indices = []
+        volume_indices = []
+        total_slices = 0
+        volumes = []
+
+        for idx, folder in enumerate(full_labelmap_path):
             labelmap = [lm for lm in sorted(os.listdir(folder)) if lm.endswith('.nii.gz') and "_" not in lm][0]
             vol_nib = nib.load(folder + labelmap)
             vol = vol_nib.get_fdata()
 
-            self.slice_indices.extend(np.arange(vol.shape[2]))  #append the vol indexes
-            self.volume_indices.extend(np.full(shape=vol.shape[2], fill_value=idx, dtype=np.int))  #append the vol indexes
-            self.total_slices += vol.shape[2]
-            self.volumes.append(vol)
+            slice_indices.extend(np.arange(vol.shape[2]))  #append the vol indexes
+            volume_indices.extend(np.full(shape=vol.shape[2], fill_value=idx, dtype=np.int))  #append the vol indexes
+            total_slices += vol.shape[2]
+            volumes.append(vol)
+        
+        return slice_indices, volume_indices, total_slices, volumes
 
-
-    def __len__(self):
-        return self.total_slices
 
     def preprocess(self, img, mask):
         if mask:
             img = np.where(img != self.params.pred_label, 0, 1)
+            
 
         return img      #.astype('float64')
 
@@ -62,12 +64,17 @@ class CT3DLabelmapDataset(Dataset):
 
         vol_nr = self.volume_indices[idx]
         # print('vol_nr: ', vol_nr, 'idx: ', idx)
-        slice = self.volumes[vol_nr][:, :, self.slice_indices[idx]].astype('int64')
+        labelmap_slice = self.volumes[vol_nr][:, :, self.slice_indices[idx]].astype('int64')        #labelmap input to the US renderer
+        if self.full_labelmap_path_imgs != self.base_folder_data_masks:
+            mask_slice = self.mask_volumes[vol_nr][:, :, self.slice_indices[idx]].astype('int64')
+        else:
+            mask_slice = labelmap_slice
 
         # resized_slice = cv2.resize(slice, (SIZE_W, SIZE_H), cv2.INTER_LINEAR_EXACT)
-        mask = self.preprocess(slice, mask=True)
+        mask_slice = self.preprocess(mask_slice, mask=True)
+        # mask = torch.rot90(mask, 3, [0, 1])
 
-        return slice, mask, str(vol_nr) + '_' + str(self.slice_indices[idx])
+        return labelmap_slice, mask_slice, str(vol_nr) + '_' + str(self.slice_indices[idx])
 
 
 class CT3DLabelmapDataLoader():
@@ -76,7 +83,7 @@ class CT3DLabelmapDataLoader():
         self.params = params
 
     def train_dataloader(self):
-        full_dataset = CT3DLabelmapDataset(self.params)
+        full_dataset = CT3DLabelmapDataset(self.params) 
         train_size = int(0.8 * len(full_dataset))
         val_size = len(full_dataset) - train_size
 

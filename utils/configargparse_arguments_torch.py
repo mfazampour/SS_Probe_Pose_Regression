@@ -7,24 +7,26 @@ def build_configargparser(parser):
     parser.add_argument("--project_name", default=None, type=str)
 
     parser.add_argument("--base_folder_data_path", default="", required=False, type=str)
+    parser.add_argument("--base_folder_mask_path", default="", required=False, type=str)
     parser.add_argument("--labelmap_path", default="", required=False, type=str)
-    parser.add_argument("--data_dir_real_us", default="", required=False, type=str)
+    parser.add_argument("--data_dir_real_us_cut_training", default="", required=False, type=str)
+    parser.add_argument("--data_dir_real_us_test", default="", required=False, type=str)
     parser.add_argument("--output_path", type=str, default="logs")
     parser.add_argument("--device", type=str, required=False, default="cuda")
+
+    #Datatset
+    parser.add_argument("--dataset", type=str, required=False)
+    parser.add_argument("--datamodule", type=str, required=False)
+    parser.add_argument("--dataloader_ct_labelmaps", type=str, required=False)
+    parser.add_argument("--dataloader_real_us", type=str, required=False)
+    parser.add_argument("--dataloader_real_us_test", type=str, required=False)
+    parser.add_argument("--n_classes", type=int, required=False)
+    parser.add_argument("--pred_label", type=int, required=False)
 
     # Model
     parser.add_argument("--module", type=str, required=False)
     parser.add_argument("--outer_model", type=str, required=False)
     parser.add_argument("--inner_model", type=str, required=False)
-
-        #Datatset
-    parser.add_argument("--dataset", type=str, required=False)
-    parser.add_argument("--datamodule", type=str, required=False)
-    parser.add_argument("--dataloader", type=str, required=False)
-    parser.add_argument("--dataloader_real_us", type=str, required=False)
-    parser.add_argument("--n_classes", type=int, required=False)
-    parser.add_argument("--pred_label", type=int, required=False)
-
 
     parser.add_argument("--num_workers", type=int, default=12)
     parser.add_argument("--batch_size", type=int, required=False)
@@ -44,9 +46,10 @@ def build_configargparser(parser):
 
     parser.add_argument("--on_polyaxon", action="store_true")
     parser.add_argument("--logging", action="store_true")
-    parser.add_argument("--polyaxon_folder", default=None, type=str)
+    parser.add_argument("--polyaxon_imgs_folder", default=None, type=str)
+    parser.add_argument("--polyaxon_masks_folder", default=None, type=str)
     parser.add_argument("--polyaxon_folder_real_us", default=None, type=str)
-
+    parser.add_argument("--polyaxon_data_dir_real_us_test", default=None, type=str)
 
 
     # known_args, _ = parser.parse_known_args()

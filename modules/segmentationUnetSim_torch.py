@@ -4,7 +4,8 @@ import torchvision.transforms.functional as F
 import monai
 # torch.set_printoptions(profile="full")
 THRESHOLD = 0.5
-
+SIZE_W = 256
+SIZE_H = 256
 
 class SegmentationSim(torch.nn.Module):
     def __init__(self, params, outer_model, inner_model):
@@ -47,35 +48,27 @@ class SegmentationSim(torch.nn.Module):
         return dict
 
     def seg_net_forward(self, input, label):
-        output = self.outer_model(input)
-        loss = self.loss_function(output, label)
+        # if not self.outer_model.training:
+        #     self.outer_model.to('cpu')
 
-        return loss, output    
+        pred = self.outer_model(input)
+        loss = self.loss_function(pred, label)
+
+        return loss, pred    
 
     def us_rendering_forward(self, batch_data_ct):
 
-        input, label, file_name = batch_data_ct[0].to(self.params.device), batch_data_ct[1].to(self.params.device), batch_data_ct[2]
-
-        # self.seg_optimizer.zero_grad()
-        # self.USRenderingModel.plot_fig(input.squeeze(), "input", False)
+        input = batch_data_ct[0].to(self.params.device)
         us_sim = self.USRenderingModel(input.squeeze()) 
-        # self.USRenderingModel.plot_fig(us_sim, "us_sim", True)
         
         return us_sim
 
 
     def step(self, input, label):
-        # print('STEPP')
-        # UltrasoundRendering().plot_fig(input.squeeze(), "input", False)
-
         us_sim = self.USRenderingModel(input.squeeze()) 
-        us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (128,128)).float()
-
-        # UltrasoundRendering().plot_fig(us_sim, "us_sim", True)
+        us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (SIZE_W, SIZE_H)).float()
 
         output = self.outer_model(us_sim_resized)
-        # UltrasoundRendering().plot_fig(z_hat.squeeze(), "z_hat", True)
-
         # z_norm = self.normalize(z)
         loss = self.loss_function(output, label)
 
@@ -86,10 +79,16 @@ class SegmentationSim(torch.nn.Module):
 
         input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
         # print('FILENAME: ' + file_name)
-        label = F.resize(label, (128,128)).float().unsqueeze(0)
+        # self.USRenderingModel.plot_fig(input.squeeze(), "input", False)
+        # self.USRenderingModel.plot_fig(label.squeeze(), "label", False)
+
+        label = torch.rot90(label, 3, [1, 2])   
+        label = F.resize(label, (SIZE_W, SIZE_H)).float().unsqueeze(0)
+        # self.USRenderingModel.plot_fig(label.squeeze(), "label_rot", False)
+
 
         self.optimizer.zero_grad()
-        loss, us_sim, output = self.step(input, label)
+        loss, us_sim, prediction = self.step(input, label)
 
         return loss, us_sim
     
@@ -97,11 +96,13 @@ class SegmentationSim(torch.nn.Module):
     def validation_step(self, batch_data, epoch, batch_idx=None):
         # print('IN VALIDATION... ')
         input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
-        label = F.resize(label, (128,128)).float().unsqueeze(0)
+
+        label = torch.rot90(label, 3, [1, 2])   
+        label = F.resize(label, (SIZE_W, SIZE_H)).float().unsqueeze(0)
 
         loss, us_sim_resized, pred = self.step(input, label)
 
-        val_images_plot = F.resize(input, (128,128)).float().unsqueeze(0)
+        val_images_plot = F.resize(input, (SIZE_W, SIZE_H)).float().unsqueeze(0)
         dict = self.create_return_dict('val', loss, val_images_plot, file_name[0], label, pred, us_sim_resized, epoch)
 
         return loss, dict

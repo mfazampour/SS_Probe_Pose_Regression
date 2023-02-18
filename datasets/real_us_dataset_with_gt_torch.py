@@ -7,17 +7,26 @@ import nibabel as nib
 import cv2
 from PIL import Image
 from torch.utils.data import random_split
-# from PIL import Image
+import torchvision.transforms as transforms
 
 
 SIZE_W = 256
 SIZE_H = 256
 
 class RealUSGTDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
+    def __init__(self, root_dir):
         self.root_dir_imgs = root_dir + 'imgs/'
         self.root_dir_masks = root_dir + 'masks/'
-        self.transform = transform
+        self.transform_img = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize([SIZE_W, SIZE_H], Image.BICUBIC),
+            transforms.Normalize((0.5,), (0.5,))
+        ])
+        self.transform_mask = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize([SIZE_W, SIZE_H], Image.BICUBIC)
+        ])
+
         self.image_files = [f for f in os.listdir(self.root_dir_imgs) if f.endswith('.jpg') or f.endswith('.png')]
         self.masks_files = [f for f in os.listdir(self.root_dir_masks) if f.endswith('.jpg') or f.endswith('.png')]
         print("len(self.image_files): ", len(self.image_files))
@@ -30,11 +39,11 @@ class RealUSGTDataset(Dataset):
         image = Image.open(image_path).convert('L')
 
         mask_path = os.path.join(self.root_dir_masks, self.masks_files[idx])
-        mask = Image.open(mask_path)
+        mask = np.asarray(Image.open(mask_path))
+        mask = np.where(mask > 0 , 1, 0)
 
-        if self.transform:
-            image = self.transform(image)
-            mask = self.transform(mask)
+        image = self.transform_img(image)
+        mask = self.transform_mask(mask)
 
         return image, mask
 
@@ -55,7 +64,7 @@ class RealUSGTDataLoader():
         val_size = len(dataset) - train_size
         train_dataset, val_dataset = random_split(dataset, [train_size, val_size])#, generator=Generator().manual_seed(0))
 
-        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
 
 
