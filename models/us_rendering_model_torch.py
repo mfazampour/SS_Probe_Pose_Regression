@@ -27,7 +27,7 @@ sigma_0_def_dict =        torch.tensor([0.1,    0.0,  0.01,  0.3,  0.3,  0.0,  0
 
 alpha_coeff_boundary_map = 0.1
 beta_coeff_scattering = 10
-TGC = 4
+TGC = 6
 
 
 def gaussian_kernel(size: int, mean: float, std: float):
@@ -216,30 +216,28 @@ class UltrasoundRendering(torch.nn.Module):
         near: float or array of shape [batch_size]. Nearest distance for a ray.
         far: float or array of shape [batch_size]. Farthest distance for a ray.
         """
-        sw = 40 * 0.001 / float(W)
-        c2w = np.eye(4)[:3,:4].astype(np.float32) # identity pose matrix
+        # sw = 40 * 0.001 / float(W)
+        # c2w = np.eye(4)[:3,:4].astype(np.float32) # identity pose matrix
 
-        if c2w is not None:
-            # special case to render full image
-            rays_o, rays_d = self.get_rays_us_linear(W, sw, c2w)
-        else:
-            # use provided ray batch
-            rays_o, rays_d = rays
+        # if c2w is not None:
+        #     # special case to render full image
+        #     rays_o, rays_d = self.get_rays_us_linear(W, sw, c2w)
+        # else:
+        #     # use provided ray batch
+        #     rays_o, rays_d = rays
 
 
-        # Create ray batch
-        rays_o = torch.tensor(rays_o).view(-1, 3).float()
-        rays_d = torch.tensor(rays_d).view(-1, 3).float()
-        near, far = near * torch.ones_like(rays_d[..., :1]), far * torch.ones_like(rays_d[..., :1])
+        # # Create ray batch
+        # rays_o = torch.tensor(rays_o).view(-1, 3).float()
+        # rays_d = torch.tensor(rays_d).view(-1, 3).float()
+        # # near, far = near * torch.ones_like(rays_d[..., :1]), far * torch.ones_like(rays_d[..., :1])
+        # # rays = torch.cat([rays_o, rays_d, near, far], dim=-1)
 
-        rays = torch.cat([rays_o, rays_d, near, far], dim=-1)
+        N_rays = W  #rays.shape[0]
+        # rays_o, rays_d = rays[:, 0:3], rays[:, 3:6]
 
-        N_rays = rays.shape[0]
-        rays_o, rays_d = rays[:, 0:3], rays[:, 3:6]
-
-        t_vals = torch.linspace(0., 1., H).to(device='cuda')
-
-        z_vals = t_vals.unsqueeze(0).expand(N_rays, -1) * 2
+        t_vals = torch.linspace(0., 1., H).to(device='cuda')    #0-1 linearly spaced, shape H
+        z_vals = t_vals.unsqueeze(0).expand(N_rays , -1) * 3
 
 
         return z_vals 
@@ -323,7 +321,7 @@ class UltrasoundRendering(torch.nn.Module):
         # for k in range(len(ret_list)):
         #     result_np = ret_list[k]
         #     if torch.is_tensor(result_np):
-        #         result_np = result_np.cpu().numpy()
+        #         result_np = result_np.detach().cpu().numpy()
                      
         #     if k==2:
         #         self.plot_fig(result_np, result_list[k], False)

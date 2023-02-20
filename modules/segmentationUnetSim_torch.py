@@ -1,6 +1,7 @@
 import torch
-# import torch.nn.functional as F
 import torchvision.transforms.functional as F
+import torchvision.transforms as transforms
+from PIL import Image
 import monai
 # torch.set_printoptions(profile="full")
 THRESHOLD = 0.5
@@ -21,6 +22,12 @@ class SegmentationSim(torch.nn.Module):
                 strides=(2, 2, 2, 2),
                 num_res_units=2,
             ).to(params.device)
+                # define transforms for image and segmentation
+            train_imtrans = transforms.Compose([
+                    transforms.Resize([286, 286], Image.BICUBIC),
+                    transforms.RandomCrop(256),
+                    transforms.RandomHorizontalFlip()
+            ])
         else:
             self.outer_model=None
 
@@ -66,9 +73,14 @@ class SegmentationSim(torch.nn.Module):
 
     def step(self, input, label):
         us_sim = self.USRenderingModel(input.squeeze()) 
+        # self.USRenderingModel.plot_fig(us_sim.squeeze(), "us_sim", True)
+
         us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (SIZE_W, SIZE_H)).float()
 
         output = self.outer_model(us_sim_resized)
+        # self.USRenderingModel.plot_fig(output.squeeze(), "output", True)
+        # self.USRenderingModel.plot_fig(output.squeeze(), "output2", False)
+
         # z_norm = self.normalize(z)
         loss = self.loss_function(output, label)
 
@@ -79,8 +91,7 @@ class SegmentationSim(torch.nn.Module):
 
         input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
         # print('FILENAME: ' + file_name)
-        # self.USRenderingModel.plot_fig(input.squeeze(), "input", False)
-        # self.USRenderingModel.plot_fig(label.squeeze(), "label", False)
+
 
         label = torch.rot90(label, 3, [1, 2])   
         label = F.resize(label, (SIZE_W, SIZE_H)).float().unsqueeze(0)
@@ -97,6 +108,9 @@ class SegmentationSim(torch.nn.Module):
         # print('IN VALIDATION... ')
         input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
 
+        # self.USRenderingModel.plot_fig(input.squeeze(), "input", False)
+        # self.USRenderingModel.plot_fig(label.squeeze(), "label", False)
+        
         label = torch.rot90(label, 3, [1, 2])   
         label = F.resize(label, (SIZE_W, SIZE_H)).float().unsqueeze(0)
 

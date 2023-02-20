@@ -5,6 +5,8 @@ import os
 import nibabel as nib
 import cv2
 from torch.utils.data import random_split
+import torchvision.transforms as transforms
+
 # from PIL import Image
 
 
@@ -29,6 +31,16 @@ class CT3DLabelmapDataset(Dataset):
         self.slice_indices, self.volume_indices, self.total_slices, self.volumes = self.read_volumes(self.full_labelmap_path_imgs)
         self.mask_slice_indices, self.mask_volume_indices, self.mask_total_slices, self.mask_volumes = self.read_volumes(self.full_labelmap_path_masks)
 
+        self.transform_img = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.RandomRotation(degrees=(0, 30), fill=9)
+        ])
+
+        self.transform_mask = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.RandomRotation(degrees=(0, 30), fill=0)
+        ])
+
 
     def __len__(self):
         return self.total_slices   #// 100    #for debugging
@@ -43,6 +55,7 @@ class CT3DLabelmapDataset(Dataset):
             labelmap = [lm for lm in sorted(os.listdir(folder)) if lm.endswith('.nii.gz') and "_" not in lm][0]
             vol_nib = nib.load(folder + labelmap)
             vol = vol_nib.get_fdata()
+            # vol = vol.transpose(0,2,1)
 
             slice_indices.extend(np.arange(vol.shape[2]))  #append the vol indexes
             volume_indices.extend(np.full(shape=vol.shape[2], fill_value=idx, dtype=np.int))  #append the vol indexes
@@ -73,6 +86,10 @@ class CT3DLabelmapDataset(Dataset):
         # resized_slice = cv2.resize(slice, (SIZE_W, SIZE_H), cv2.INTER_LINEAR_EXACT)
         mask_slice = self.preprocess(mask_slice, mask=True)
         # mask = torch.rot90(mask, 3, [0, 1])
+
+        # labelmap_slice = self.transform_img(labelmap_slice)
+        # mask_slice = self.transform_mask(mask_slice)
+
 
         return labelmap_slice, mask_slice, str(vol_nr) + '_' + str(self.slice_indices[idx])
 
