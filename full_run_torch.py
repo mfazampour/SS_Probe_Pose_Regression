@@ -22,6 +22,7 @@ from utils.utils import argparse_summary, get_class_by_path
 from utils.early_stopping import EarlyStopping
 
 RANDOM_SEED = False
+BATCH = 2
 torch.use_deterministic_algorithms(True, warn_only=True)
 # COMMENT = f"################ UNET vessel segm ############################"
 # tb_logger = SummaryWriter('log_dir/cactuss_end2end')
@@ -35,9 +36,8 @@ def train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader)
     inner_model = InnerModelClass()
     module = ModuleClass(hparams, OuterModelClass, inner_model)
 
-    # wandb.watch(inner_model, log='all', log_graph=True, log_freq=10)
-    # wandb.watch([inner_model, outer_model], log='all', log_graph=True, log_freq=100)
-
+    # if hparams.logging: wandb.watch(inner_model, log='all', log_graph=True, log_freq=100)
+    if hparams.logging: wandb.watch([inner_model, module.outer_model], log='all', log_graph=True, log_freq=100)
 
     dataloader = DatasetLoader(hparams)
     train_loader, train_dataset, val_dataset  = dataloader.train_dataloader()
@@ -59,17 +59,51 @@ def train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader)
         module.outer_model.train()
         inner_model.train()
         step = 0
-        for batch_data in train_loader:
+        batch_loss_list =[]
+        
+        dataloader_iterator = iter(train_loader)
+        while step < len(train_loader):
             step += 1
-
-            loss = module.training_step(batch_data)
+            module.optimizer.zero_grad()
+            while step % hparams.batch_size_manual != 0 :
+                data = next(dataloader_iterator)
+                input, label = module.get_data(data)
+                loss, us_sim, prediction = module.step(input, label)
+                batch_loss_list.append(loss)
+                step += 1
+            
+            loss = torch.mean(torch.stack(batch_loss_list))
             loss.backward()
-            # log_model_gradients(inner_model, step)
             module.optimizer.step()
+            batch_loss_list =[]
 
             print(f"{step}/{len(train_dataset) // train_loader.batch_size}, train_loss: {loss.item():.4f}")
             if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
             train_losses.append(loss.item())
+
+
+        
+        # for batch_data in train_loader:
+        #     step += 1
+
+        #     # loss, _ = module.training_step(batch_data)
+        #     input, label = module.get_data(batch_data)
+        #     module.optimizer.zero_grad()
+
+        #     input, label = module.get_data(batch_data)
+        #     loss, us_sim, prediction = module.step(input, label)
+
+        #     loss.backward()
+        #     # log_model_gradients(inner_model, step)
+        #     module.optimizer.step()
+        #     batch_loss_list =[]
+
+        #     print(f"{step}/{len(train_dataset) // train_loader.batch_size}, train_loss: {loss.item():.4f}")
+        #     if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
+        #     train_losses.append(loss.item())
+            
+        #     plotter.log_us_rendering_values(inner_model, step)
+
 
 
         if (epoch + 1) % hparams.validate_every_n_steps == 0:
@@ -200,8 +234,10 @@ if __name__ == "__main__":
         from polyaxon_client.tracking import Experiment, get_data_paths, get_outputs_path
         print('get_data_paths(): ', get_data_paths())
 
-        hparams.base_folder_data_path = get_data_paths()['data1'] + hparams.polyaxon_folder
-        print('DATASET Folder: ', hparams.base_folder_data_path)
+        hparams.base_folder_data_path = get_data_paths()['data1'] + hparams.polyaxon_imgs_folder
+        hparams.base_folder_mask_path = get_data_paths()['data1'] + hparams.polyaxon_masks_folder
+        print('Labelmaps DATASET Folder: ', hparams.base_folder_data_path)
+
         hparams.output_path = get_outputs_path()
         poly_experiment_info = Experiment.get_experiment_info()
         poly_experiment_nr = poly_experiment_info['experiment_name'].split(".")[-1]
@@ -219,6 +255,8 @@ if __name__ == "__main__":
     # parser = ModuleClass.add_module_specific_args(parser)
 
     DatasetClass, DatasetLoader = load_dataset(hparams)
+
+
 
    
     argparse_summary(hparams, parser)

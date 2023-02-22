@@ -6,8 +6,7 @@ import nibabel as nib
 import cv2
 from torch.utils.data import random_split
 import torchvision.transforms as transforms
-
-# from PIL import Image
+from PIL import Image
 
 
 ''' This data loader is designed to work with a dictionary of volumes,
@@ -33,17 +32,21 @@ class CT3DLabelmapDataset(Dataset):
 
         self.transform_img = transforms.Compose([
             transforms.ToTensor(),
-            transforms.RandomRotation(degrees=(0, 30), fill=9)
+            # transforms.RandomRotation(degrees=(0, 30), fill=9),
+            transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(0.90, 2.0), fill=9),
+            transforms.Resize([256, 256], Image.NEAREST),
+            # transforms.RandomCrop(256),
+            transforms.RandomVerticalFlip()
         ])
 
-        self.transform_mask = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.RandomRotation(degrees=(0, 30), fill=0)
-        ])
+        # self.transform_mask = transforms.Compose([
+        #     transforms.ToTensor(),
+        #     transforms.RandomRotation(degrees=(0, 30), fill=0)
+        # ])
 
 
     def __len__(self):
-        return self.total_slices   #// 100    #for debugging
+        return self.total_slices    #// 100    #for debugging
 
     def read_volumes(self, full_labelmap_path):
         slice_indices = []
@@ -83,12 +86,16 @@ class CT3DLabelmapDataset(Dataset):
         else:
             mask_slice = labelmap_slice
 
-        # resized_slice = cv2.resize(slice, (SIZE_W, SIZE_H), cv2.INTER_LINEAR_EXACT)
-        mask_slice = self.preprocess(mask_slice, mask=True)
-        # mask = torch.rot90(mask, 3, [0, 1])
+        # # resized_slice = cv2.resize(slice, (SIZE_W, SIZE_H), cv2.INTER_LINEAR_EXACT)
+        # mask_slice = self.preprocess(mask_slice, mask=True)
+        # # mask = torch.rot90(mask, 3, [0, 1])
 
-        # labelmap_slice = self.transform_img(labelmap_slice)
-        # mask_slice = self.transform_mask(mask_slice)
+        state = torch.get_rng_state()
+        labelmap_slice = self.transform_img(labelmap_slice)
+        torch.set_rng_state(state)
+        mask_slice = self.transform_img(mask_slice)
+        mask_slice = torch.where(mask_slice != self.params.pred_label, 0, 1)
+
 
 
         return labelmap_slice, mask_slice, str(vol_nr) + '_' + str(self.slice_indices[idx])
