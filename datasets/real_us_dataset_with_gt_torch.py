@@ -8,6 +8,7 @@ import cv2
 from PIL import Image
 from torch.utils.data import random_split
 import torchvision.transforms as transforms
+import torchvision.transforms.functional as F
 
 
 SIZE_W = 256
@@ -20,11 +21,12 @@ class RealUSGTDataset(Dataset):
         self.transform_img = transforms.Compose([
             transforms.ToTensor(),
             transforms.Resize([SIZE_W, SIZE_H], Image.BICUBIC),
-            transforms.Normalize((0.5,), (0.5,))
+            transforms.Normalize((0.5,), (0.5,)),
         ])
         self.transform_mask = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Resize([SIZE_W, SIZE_H], Image.BICUBIC)
+            transforms.Resize([SIZE_W, SIZE_H], Image.BICUBIC),
+
         ])
 
         self.image_files = [f for f in os.listdir(self.root_dir_imgs) if f.endswith('.jpg') or f.endswith('.png')]
@@ -43,7 +45,10 @@ class RealUSGTDataset(Dataset):
         mask = np.where(mask > 0 , 1, 0)
 
         image = self.transform_img(image)
+        image = F.vflip(image)
         mask = self.transform_mask(mask)
+        mask = F.vflip(mask)
+
 
         return image, mask
 

@@ -6,7 +6,7 @@ import nibabel as nib
 import cv2
 from torch.utils.data import random_split
 import torchvision.transforms as transforms
-from PIL import Image
+# from PIL import Image
 
 
 ''' This data loader is designed to work with a dictionary of volumes,
@@ -33,8 +33,8 @@ class CT3DLabelmapDataset(Dataset):
         self.transform_img = transforms.Compose([
             transforms.ToTensor(),
             # transforms.RandomRotation(degrees=(0, 30), fill=9),
-            transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(0.90, 2.0), fill=9),
-            transforms.Resize([256, 256], Image.NEAREST),
+            transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(1.0, 2.0), fill=9),
+            transforms.Resize([256, 256], transforms.InterpolationMode.NEAREST),
             # transforms.RandomCrop(256),
             transforms.RandomVerticalFlip()
         ])
@@ -46,7 +46,7 @@ class CT3DLabelmapDataset(Dataset):
 
 
     def __len__(self):
-        return self.total_slices    #// 100    #for debugging
+        return self.total_slices  #// 100    #for debugging
 
     def read_volumes(self, full_labelmap_path):
         slice_indices = []

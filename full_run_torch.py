@@ -4,37 +4,110 @@ import numpy as np
 import torch
 import wandb
 # from tensorboardX import SummaryWriter
-import monai
-from monai.transforms import (
-    Activations,
-    AsDiscrete,
-    Compose,
-    LoadImage,
-    RandRotate90,
-    RandSpatialCrop,
-    ScaleIntensity,
-)
+# import monai
+from tqdm import tqdm
 import configargparse
 from utils.configargparse_arguments_torch import build_configargparser
 import torchvision.transforms.functional as F
 from utils.plotter_torch import Plotter
 from utils.utils import argparse_summary, get_class_by_path
 from utils.early_stopping import EarlyStopping
+from utils.wandb_sweeper import HyperParameterSearch
+import sys
 
 RANDOM_SEED = False
 BATCH = 2
-torch.use_deterministic_algorithms(True, warn_only=True)
+# torch.use_deterministic_algorithms(True, warn_only=True)
 # COMMENT = f"################ UNET vessel segm ############################"
 # tb_logger = SummaryWriter('log_dir/cactuss_end2end')
     
 
-def train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader):
+
+
+def check_gradients(net):
+    for name, param in net.named_parameters():
+        if param.grad is not None and torch.isnan(param.grad).any():
+            print(f'NaN found in gradients for parameter {name}')
+            sys.exit()
+
+
+
+
+def training_loop_seg_net(hparams, module, inner_model, batch_size, train_loader, train_losses,plotter):
+    step = 0
+    batch_loss_list =[]
+    if batch_size == 1:
+        for batch_data in tqdm(train_loader, total=len(train_loader), ncols= 100):
+            step += 1
+
+            # loss, _ = module.training_step(batch_data)
+            # input, label = module.get_data(batch_data)
+            module.optimizer.zero_grad()
+
+            input, label = module.get_data(batch_data)
+            loss, us_sim, prediction = module.step(input, label)
+
+            check_gradients(module)
+            loss.backward()
+            # log_model_gradients(inner_model, step)
+            module.optimizer.step()
+            # batch_loss_list =[]
+
+            print(f"{step}/{len(train_loader.dataset) // train_loader.batch_size}, train_loss: {loss.item():.4f}")
+            if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
+            train_losses.append(loss.item())
+            
+            plotter.log_us_rendering_values(inner_model, step)
+
+    else:
+        dataloader_iterator = iter(train_loader)
+        while step < len(train_loader):
+            step += 1
+            module.optimizer.zero_grad()
+            # while step % hparams.batch_size_manual != 0 :
+            while step % batch_size != 0:
+                data = next(dataloader_iterator)
+
+                input, label = module.get_data(data)
+                loss, us_sim, prediction = module.step(input, label)
+                batch_loss_list.append(loss)
+                step += 1
+                if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
+                train_losses.append(loss.item())
+            
+            loss = torch.mean(torch.stack(batch_loss_list))
+
+            check_gradients(module)
+            loss.backward()
+            module.optimizer.step()
+            batch_loss_list =[]
+
+            print(f"{step}/{len(train_loader.dataset) // train_loader.batch_size}, train_loss: {loss.item():.4f}")
+            plotter.log_us_rendering_values(inner_model, step)
+
+
+def train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader, wandb_conf):
 
     if not RANDOM_SEED:
-        torch.manual_seed(23)
+        torch.manual_seed(2023)
 
+    # with wandb.init(config=config):
+    # wandb.config.update(config)
+    # config = wandb.config
+    # hparams.outer_model_learning_rate = config.lr_outer_model
+    # hparams.inner_model_learning_rate = config.lr_inner_model
+    plotter = Plotter()
     inner_model = InnerModelClass()
-    module = ModuleClass(hparams, OuterModelClass, inner_model)
+    outer_model = OuterModelClass(hparams=hparams)
+
+    module = ModuleClass(hparams, outer_model, inner_model)
+
+    if wandb_conf is not None:
+        module.optimizer.param_groups[0]['lr'] = wandb_conf.lr_outer_model
+        module.optimizer.param_groups[1]['lr'] = wandb_conf.lr_inner_model
+        bs = wandb_conf.batch_size
+    else:
+        bs = hparams.batch_size_manual
 
     # if hparams.logging: wandb.watch(inner_model, log='all', log_graph=True, log_freq=100)
     if hparams.logging: wandb.watch([inner_model, module.outer_model], log='all', log_graph=True, log_freq=100)
@@ -55,55 +128,12 @@ def train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader)
     # to track the average validation loss per epoch as the model trains
     avg_valid_losses = [] 
 
+
     for epoch in range(1, hparams.max_epochs + 1):
         module.outer_model.train()
         inner_model.train()
-        step = 0
-        batch_loss_list =[]
-        
-        dataloader_iterator = iter(train_loader)
-        while step < len(train_loader):
-            step += 1
-            module.optimizer.zero_grad()
-            while step % hparams.batch_size_manual != 0 :
-                data = next(dataloader_iterator)
-                input, label = module.get_data(data)
-                loss, us_sim, prediction = module.step(input, label)
-                batch_loss_list.append(loss)
-                step += 1
-            
-            loss = torch.mean(torch.stack(batch_loss_list))
-            loss.backward()
-            module.optimizer.step()
-            batch_loss_list =[]
 
-            print(f"{step}/{len(train_dataset) // train_loader.batch_size}, train_loss: {loss.item():.4f}")
-            if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
-            train_losses.append(loss.item())
-
-
-        
-        # for batch_data in train_loader:
-        #     step += 1
-
-        #     # loss, _ = module.training_step(batch_data)
-        #     input, label = module.get_data(batch_data)
-        #     module.optimizer.zero_grad()
-
-        #     input, label = module.get_data(batch_data)
-        #     loss, us_sim, prediction = module.step(input, label)
-
-        #     loss.backward()
-        #     # log_model_gradients(inner_model, step)
-        #     module.optimizer.step()
-        #     batch_loss_list =[]
-
-        #     print(f"{step}/{len(train_dataset) // train_loader.batch_size}, train_loss: {loss.item():.4f}")
-        #     if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
-        #     train_losses.append(loss.item())
-            
-        #     plotter.log_us_rendering_values(inner_model, step)
-
+        training_loop_seg_net(hparams, module, inner_model, bs, train_loader, train_losses, plotter)
 
 
         if (epoch + 1) % hparams.validate_every_n_steps == 0:
@@ -111,29 +141,29 @@ def train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader)
             inner_model.eval()
             val_step = 0
             with torch.no_grad():
-                for val_batch in val_loader:
+                for val_batch in tqdm(val_loader, total=len(val_loader), ncols= 100):
                     val_step += 1
 
-                    val_loss, dict = module.validation_step(val_batch, epoch)
+                    _ , val_loss, dict = module.validation_step(val_batch, epoch)
                     print(f"{val_step}/{len(val_dataset) // val_loader.batch_size}, val_loss: {val_loss.item():.4f}")
                     if hparams.logging: wandb.log({"val_loss_step": val_loss.item()})
 
-                    valid_losses.append(loss.item())
+                    valid_losses.append(val_loss.item())
                     plotter.validation_batch_end(dict)
 
         # calculate average loss over an epoch
-        train_loss = np.average(train_losses)
-        valid_loss = np.average(valid_losses)
-        avg_train_losses.append(train_loss)
-        avg_valid_losses.append(valid_loss)
+        train_loss_epoch = np.average(train_losses)
+        val_loss_epoch = np.average(valid_losses)
+        avg_train_losses.append(train_loss_epoch)
+        avg_valid_losses.append(val_loss_epoch)
         
         epoch_len = len(str(hparams.max_epochs))
         print(f'[{epoch:>{epoch_len}}/{hparams.max_epochs:>{epoch_len}}] ' +
-                     f'train_loss_epoch: {train_loss:.5f} ' +
-                     f'valid_loss_epoch: {valid_loss:.5f}')
+                    f'train_loss_epoch: {train_loss_epoch:.5f} ' +
+                    f'val_loss_epoch: {val_loss_epoch:.5f}')
 
-        if hparams.logging: wandb.log({"train_loss_epoch": train_loss, "epoch": epoch})
-        if hparams.logging: wandb.log({"val_loss_epoch": valid_loss, "epoch": epoch})
+        if hparams.logging: wandb.log({"train_loss_epoch": train_loss_epoch, "epoch": epoch})
+        if hparams.logging: wandb.log({"val_loss_epoch": val_loss_epoch, "epoch": epoch})
 
         if hparams.logging: plotter.validation_epoch_end()
         print(f"--------------- END VAL ------------")
@@ -141,7 +171,7 @@ def train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader)
         # early_stopping needs the validation loss to check if it has decresed, 
         # and if it has, it will make a checkpoint of the current model
         if(epoch > hparams.min_epochs):
-            early_stopping(valid_loss, epoch, module)
+            early_stopping(val_loss_epoch, epoch, module)
         
         if early_stopping.early_stop:
             print("Early stopping")
@@ -154,7 +184,7 @@ def train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader)
 
             
     print(f'train completed, avg_train_losses: {avg_train_losses:.4f} avg_valid_losses: {avg_valid_losses}' +
-          f'best val_loss: {early_stopping.val_loss_min} at best_epoch: {early_stopping.best_epoch}')
+        f'best val_loss: {early_stopping.val_loss_min} at best_epoch: {early_stopping.best_epoch}')
 
 
 
@@ -169,7 +199,7 @@ def load_module(module):
     # ------------------------
     # LOAD MODULE
     # ------------------------
-    module_path = f"modules.{hparams.module}"
+    module_path = f"modules.{module}"
     ModuleClass = get_class_by_path(module_path)
 
     return ModuleClass
@@ -195,10 +225,11 @@ def load_dataset(hparams):
 
 
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
+def main():
 
-    monai.config.print_config()
-    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+    # monai.config.print_config()
+    # logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
     # ------------------------
     # TRAINING ARGUMENTS
@@ -211,10 +242,13 @@ if __name__ == "__main__":
     hparams.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     hparams.exp_name += str(hparams.pred_label) + '_' + str(hparams.inner_model_learning_rate) + '_' + str(hparams.outer_model_learning_rate)
 
-    if hparams.logging: wandb.init(name=hparams.exp_name, project=hparams.project_name)
-    print('-------------TEST 1 --------------')
-    plotter = Plotter()
-    print('-------------TEST 2 --------------')
+
+    if hparams.wandb_conf:
+        run = wandb.init()
+        wandb_conf = wandb.config
+    else:
+        wandb_conf = None
+        if hparams.logging: wandb.init(name=hparams.exp_name, project=hparams.project_name)
 
 
     print(f'************************************************************************************* \n'
@@ -251,20 +285,55 @@ if __name__ == "__main__":
     # ---------------------
     ModuleClass = load_module(hparams.module)
     InnerModelClass = load_model(hparams.inner_model)
-    OuterModelClass = hparams.outer_model
+    OuterModelClass = load_model(hparams.outer_model)
+    # OuterModelClass = hparams.outer_model
     # parser = ModuleClass.add_module_specific_args(parser)
 
     DatasetClass, DatasetLoader = load_dataset(hparams)
-
-
-
-   
     argparse_summary(hparams, parser)
+
+    # wandb.init()
+
+    # with wandb.init():
+    #     config = wandb.config
 
     # ---------------------
     # RUN TRAINING
     # ---------------------
-    train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader)
+    train(hparams, ModuleClass, OuterModelClass, InnerModelClass, DatasetLoader, wandb_conf)
+
+
+if __name__ == "__main__":
+    
+    parser = configargparse.ArgParser(
+    config_file_parser_class=configargparse.YAMLConfigFileParser)
+    parser.add('-c', is_config_file=True, help='config file path')
+    parser, hparams = build_configargparser(parser)
+
+    if hparams.wandb_conf:
+        # wandb_sweeep = HyperParameterSearch(method='grid', metric='val_loss_epoch')
+        # wandb_sweeep_config = wandb_sweeep.set_parameters_to_optimize_grid(batch_sizes=[1, 2, 4, 8, 32, 64, 128], 
+        #                                                                     lrs_inner_model=[0.0001, 0.001, 0.01], 
+        #                                                                     lrs_outer_model=[0.0001, 0.001, 0.01, 0.1])
+        # # # wandb_sweeep_config = wandb_sweeep.set_parameters_to_optimize_random(batch_sizes_min_max=[1, 64], lrs_inner_model_min_max=[0, 0.1], lrs_outer_model_min_max=[0, 0.1])
+
+        # sweep_id = wandb.sweep(wandb_sweeep_config, project="cactuss_end2end-sweeps")
+        # # print("sweep_id", sweep_id)
+        # wandb.config.update(wandb_sweeep_config)
+
+        # api = wandb.Api()
+        # run = api.run('danivelikova/cactuss_end2end-sweeps/69rfe3cg')
+        # run.config["lrs_inner_model"] = [0.0001, 0.001, 0.01, 0.1]
+        # run.config["lrs_outer_model"] = [0.0001, 0.001, 0.01, 0.1]
+        # run.update()
+
+        sweep_id = 'danivelikova/cactuss_end2end-sweeps/uvn3avwq'   #grid
+        #sweep_id =  'danivelikova/cactuss_end2end-sweeps/aip1hggd'  #bayesian sweep
+        wandb.agent(sweep_id, function=main, count=1)
+
+    else:
+        main()
+
 
 # load the last checkpoint with the best model
 # model.load_state_dict(torch.load('checkpoint.pt'))

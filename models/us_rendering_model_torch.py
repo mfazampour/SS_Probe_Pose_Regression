@@ -20,9 +20,9 @@ import torch.nn.functional as F
                                     #    2        3    4      6     8    9     11     12    13
 acoustic_imped_def_dict = torch.tensor([0.0004, 1.38, 1.61,  1.62, 1.62, 0.3,  1.65, 1.63, 7.8], requires_grad=True).to(device='cuda')    # Z in MRayl
 attenuation_def_dict =    torch.tensor([1.64,   0.63, 0.18,  1.0,  1.09, 0.54, 0.7,  0.54, 5.0], requires_grad=True).to(device='cuda')    # alpha in dB cm^-1 at 1 MHz
-mu_0_def_dict =           torch.tensor([0.78,   0.5,  0.001, 0.4,  0.4,  0.3,  0.19, 0.64, 0.78], requires_grad=True).to(device='cuda') # mu_0 - scattering_density
-mu_1_def_dict =           torch.tensor([0.56,   0.5,  0.0,   0.6,  0.6,  0.2,  0.5,  0.64, 0.56], requires_grad=True).to(device='cuda') # mu_1 - scattering_mu
-sigma_0_def_dict =        torch.tensor([0.1,    0.0,  0.01,  0.3,  0.3,  0.0,  0.24, 0.1,  0.1], requires_grad=True).to(device='cuda') # sigma_0 - scattering_sigma
+mu_0_def_dict =           torch.tensor([0.78,   0.5,  0.001, 0.4,  0.4,  0.3,  0.19, 0.64, 0.78], requires_grad=True).to(device='cuda') # mu_0 - scattering_mu   mean brightness
+mu_1_def_dict =           torch.tensor([0.56,   0.5,  0.0,   0.6,  0.6,  0.2,  0.4,  0.64, 0.56], requires_grad=True).to(device='cuda') # mu_1 - scattering density, Nr of scatterers/voxel
+sigma_0_def_dict =        torch.tensor([0.1,    0.0,  0.01,  0.3,  0.3,  0.0,  0.24, 0.1,  0.1], requires_grad=True).to(device='cuda') # sigma_0 - scattering_sigma - brightness std
 
 
 alpha_coeff_boundary_map = 0.1
@@ -121,8 +121,9 @@ class UltrasoundRendering(torch.nn.Module):
             plt.imshow(fig, cmap='gray', vmin=0, vmax=1, interpolation='none', norm=None)
         else:
             plt.imshow(fig, interpolation='none', norm=None)
-        plt.colorbar()
-        plt.savefig(save_dir + fig_name + '.png')
+        # plt.colorbar()
+        plt.axis('off')
+        plt.savefig(save_dir + fig_name + '.png', bbox_inches='tight',transparent=True, pad_inches=0)
 
 
 
@@ -149,16 +150,16 @@ class UltrasoundRendering(torch.nn.Module):
         reflection_total_plot = torch.log(reflection_total + torch.finfo(torch.float32).eps)
 
         texture_noise = torch.randn(H, W, dtype=torch.float32).to(device='cuda')
-        scattering_probability = torch.randn(H, W, dtype=torch.float32).to(device='cuda')
+        scattering_probability = torch.randn(H, W, dtype=torch.float32).to(device='cuda') + 1   #?????
 
         scattering_zero = torch.zeros(H, W, dtype=torch.float32).to(device='cuda')
 
-        z = mu_0_map - scattering_probability
+        z = mu_1_map - scattering_probability
         sigmoid_map = torch.sigmoid(beta_coeff_scattering * z)
-        scatterers_map =  (1 - sigmoid_map) * (texture_noise * sigma_0_map + mu_1_map) + sigmoid_map * scattering_zero
+        scatterers_map =  (1 - sigmoid_map) * (texture_noise * sigma_0_map + mu_0_map) + sigmoid_map * scattering_zero
 
-        # scatterers_map = torch.where(scattering_probability <= mu_0_map, 
-        #                     texture_noise * sigma_0_map + mu_1_map, 
+        # scatterers_map = torch.where(scattering_probability <= mu_1_map, 
+        #                     texture_noise * sigma_0_map + mu_0_map, 
         #                     scattering_zero)
 
         psf_scatter_conv = torch.nn.functional.conv2d(input=scatterers_map[None, None, :, :], weight=g_kernel, stride=1, padding="same")
@@ -167,7 +168,7 @@ class UltrasoundRendering(torch.nn.Module):
 
         psf_scatter_conv = psf_scatter_conv.squeeze()
 
-        b = attenuation_total * psf_scatter_conv
+        b = attenuation_total * psf_scatter_conv #* reflection_total
 
         border_convolution = torch.nn.functional.conv2d(input=boundary_map[None, None, :, :], weight=g_kernel, stride=1, padding="same")
         border_convolution = border_convolution.squeeze()
@@ -337,7 +338,6 @@ class UltrasoundRendering(torch.nn.Module):
         self.intensity_map_masked = self.intensity_map  * torch.transpose(us_mask, 0, 1) #np.transpose(us_mask)
         self.intensity_map_masked = torch.rot90(self.intensity_map_masked, 3, [0, 1])
 
-        # self.plot_fig(self.intensity_map_masked, "intensity_map_masked2", True)
-
+        # self.plot_fig(self.intensity_map_masked, "intensity_map_masked", True)
         return self.intensity_map_masked
 

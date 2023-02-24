@@ -5,18 +5,11 @@ import numpy as np
 import torch
 import time
 import wandb
-from tqdm import tqdm
+from tqdm.auto import tqdm, trange
+from time import sleep
+
 # from tensorboardX import SummaryWriter
-import monai
-from monai.transforms import (
-    Activations,
-    AsDiscrete,
-    Compose,
-    LoadImage,
-    RandRotate90,
-    RandSpatialCrop,
-    ScaleIntensity,
-)
+# import monai
 import configargparse
 from utils.configargparse_arguments_torch import build_configargparser
 import torchvision.transforms.functional as F
@@ -33,9 +26,12 @@ from cut.data.base_dataset import get_transform as cut_get_transform
 import torchvision.transforms as transforms
 from torch.utils.data import random_split
 import torchvision.transforms as T
+from torch.nn.functional import kl_div
+from full_run_torch import training_loop_seg_net
 
 MANUAL_SEED = False
-EPOCHS_INIT_CUT = 5
+EPOCHS_ONLY_CUT = 0
+EPOCHS_ONLY_SEG_NET = 0
 
 # torch.use_deterministic_algorithms(True, warn_only=True)
 # tb_logger = SummaryWriter('log_dir/cactuss_end2end')
@@ -87,7 +83,9 @@ class CUTTrainer():
         data_cut_real_us['B'] = data_cut_rendered_us   # add cut_model.real_B
         
         optimize_start_time = time.time()
-        if epoch == opt_cut.epoch_count and self.init_cut:    #initialize only on epoch 1 
+        # if epoch == opt_cut.epoch_count and self.init_cut:    #initialize only on epoch 1 
+        if self.init_cut:    #initialize cut
+            print(f"--------------- INIT CUT --------------")
             self.init_cut = False
             self.cut_model.data_dependent_initialize(data_cut_real_us)
             self.cut_model.setup(opt_cut)               # regular setup: load and print networks; create schedulers
@@ -110,17 +108,7 @@ class CUTTrainer():
             opt_cut.visualizer.print_current_losses(epoch, epoch_iter, losses, self.optimize_time, self.t_data, wandb)
 
 
-# def log_model_gradients(model, step):
-#     for tag, value in model.named_parameters():
-#         if value.grad is not None:
-#             tb_logger.add_histogram(tag + "/grad", value.grad.cpu(), step)
 
-def log_us_rendering_values(us_rendering_values):
-    us_rendering_maps = ['acoustic_imp_', 'atten_', 'mu_0_', 'mu_1_', 'sigma_0_' ]
-    for map, dict in zip(us_rendering_maps, us_rendering_values):
-        for label, value in zip(inner_model.labels, dict):
-            wandb.log({map+label: value}, commit=False)
-        wandb.log({"step":step})
 
 # LOAD MODULE
 def load_module(module):
@@ -151,7 +139,18 @@ def load_dataset(dataloader):
     # parser = DatasetClass.add_dataset_specific_args(parser)
     return DataLoader
 
+def calc_kl_div(img_nr, epoch):
+    # Normalize the images to have a probability distribution over pixel values
+    img1 = img1 / torch.sum(img1)
+    img2 = img2 / torch.sum(img2)
 
+    # Compute the KL divergence between the two images
+    kl_divergence = kl_div(img1.flatten(), img2.flatten())
+
+    print("KL divergence between the two images: ", kl_divergence.item())
+    if hparams.logging: wandb.log({"kl_divergence_epoch_" + str(epoch): kl_divergence.item()})
+
+    return kl_divergence.item()
 
 if __name__ == "__main__":
 
@@ -224,12 +223,15 @@ if __name__ == "__main__":
     # ---------------------
     ModuleClass = load_module(hparams.module)
     InnerModelClass = load_model(hparams.inner_model)
-    OuterModelClass = hparams.outer_model
+    OuterModelClass = load_model(hparams.outer_model)
+    # OuterModelClass = hparams.outer_model
 
     cut_model = cut_create_model(opt_cut)      # create a model given opt.model and other options
 
     inner_model = InnerModelClass()
-    module = ModuleClass(hparams, OuterModelClass, inner_model)
+    outer_model = OuterModelClass(hparams=hparams)
+
+    module = ModuleClass(hparams, outer_model, inner_model)
 
     # wandb.watch(inner_model, log='all', log_graph=True, log_freq=10)
     if hparams.logging: wandb.watch([inner_model, module.outer_model], log='all', log_graph=True, log_freq=100)
@@ -265,11 +267,12 @@ if __name__ == "__main__":
     # G_train_losses, D_train_losses, D_real_train_losses, D_fake_train_losses = ([] for i in range(4))
     # G_val_losses, D_val_losses, D_real_val_losses, D_fake_val_losses = ([] for i in range(4))
 
-    # ---------------------
+    # --------------------
     # RUN TRAINING
     # ---------------------
-    init_CUT = True
-    for epoch in range(1, hparams.max_epochs + 1):
+    only_CUT = True
+    only_SEGNET = True
+    for epoch in trange(1, hparams.max_epochs + 1):
 
         epoch_iter = 0 
         opt_cut.visualizer.reset() 
@@ -280,62 +283,146 @@ if __name__ == "__main__":
         module.train()
         module.outer_model.train()
         inner_model.train()
-        for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps), ncols= 100):
-            # opt_cut.isTrain = True
-            if epoch <= EPOCHS_INIT_CUT:
+
+        if epoch <= EPOCHS_ONLY_SEG_NET and EPOCHS_ONLY_SEG_NET > 0:
+            # print(f"--------------- INIT SEG NET ------------", cut_trainer.total_iter)
+            #train SEG NET only
+            training_loop_seg_net(hparams, module, inner_model, hparams.batch_size_manual, train_loader_ct_labelmaps, train_losses, plotter)
+
+        # opt_cut.isTrain = True
+        if epoch <= EPOCHS_ONLY_CUT and EPOCHS_ONLY_CUT > 0:
+            for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps), ncols= 100, position=0, leave=True):
                 # print(f"--------------- INIT CUT ------------", cut_trainer.total_iter)
-                #init CUT
+                #train CUT only
                 cut_trainer.train_cut(batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
-                log_us_rendering_values([inner_model.acoustic_impedance_dict, inner_model.attenuation_dict, 
-                                        inner_model.mu_0_dict, inner_model.mu_1_dict, inner_model.sigma_0_dict])
+    
+        if epoch > EPOCHS_ONLY_SEG_NET:
+            # print(f"--------------- TRAIN JOINTLY SEG NET+CUT ------------", cut_trainer.total_iter)
+            if only_CUT: only_CUT = False
+            if only_SEGNET: only_SEGNET = False
+            # print(f"--------------- Train US Renderer + SEG NET + CUT -------------- epoch: ", epoch)
+            #Train US Renderer + SEG NET
+            step += 1
+
+            batch_loss_list =[]
+            if hparams.batch_size_manual == 1:
+                # for batch_data in train_loader:
+                for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps), ncols= 100):   #, position=0, leave=True):
+                    step += 1
+                    module.optimizer.zero_grad()
+                    input, label = module.get_data(batch_data_ct)
+                    loss, us_sim, prediction = module.step(input, label)
+                    # check_gradients(module)
+                    loss.backward()
+                    # log_model_gradients(inner_model, step)
+                    module.optimizer.step()
+
+                    # print(f"{step}/{len(train_loader_ct_labelmaps.dataset) // train_loader_ct_labelmaps.batch_size}, train_loss: {loss.item():.4f}")
+                    if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
+                    train_losses.append(loss.item())
+                    if hparams.logging: plotter.log_us_rendering_values(inner_model, step)
+                    
+                    cut_trainer.train_cut(batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
 
             else:
-                if init_CUT: init_CUT = False
-                # print(f"--------------- Train US Renderer + SEG NET + CUT -------------- epoch: ", epoch)
-                #Train US Renderer + SEG NET
-                step += 1
+                dataloader_iterator = iter(train_loader_ct_labelmaps)
+                while step < len(train_loader_ct_labelmaps):
+                    step += 1
+                    module.optimizer.zero_grad()
+                    # while step % hparams.batch_size_manual != 0 :
+                    while step % hparams.batch_size_manual != 0:
+                        data = next(dataloader_iterator)
 
-                train_seg_loss, us_rendered = module.training_step(batch_data_ct)
-                train_seg_loss.backward()
-                # log_model_gradients(inner_model, step)
-                module.optimizer.step()
+                        input, label = module.get_data(data)
+                        loss, us_sim, prediction = module.step(input, label)
+                        batch_loss_list.append(loss)
+                        step += 1
+                        if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
+                        train_losses.append(loss.item())
+                    
+                    loss = torch.mean(torch.stack(batch_loss_list))
 
-                print(f"{step}/{len(train_dataset_ct_labelmaps) // train_loader_ct_labelmaps.batch_size}, seg_train_loss: {train_seg_loss.item():.4f}")
-                if hparams.logging: wandb.log({"seg_train_loss_step": train_seg_loss.item()}, step=step)
-                train_losses.append(train_seg_loss.item())
+                    # check_gradients(module)
+                    loss.backward()
+                    module.optimizer.step()
+                    batch_loss_list =[]
 
-                acoustic_impedance_dict_before_cut = inner_model.acoustic_impedance_dict
-                log_us_rendering_values([inner_model.acoustic_impedance_dict, inner_model.attenuation_dict, 
-                                        inner_model.mu_0_dict, inner_model.mu_1_dict, inner_model.sigma_0_dict])
+                    print(f"{step}/{len(train_loader_ct_labelmaps.dataset) // train_loader_ct_labelmaps.batch_size}, train_loss: {loss.item():.4f}")
+                    if hparams.logging: plotter.log_us_rendering_values(inner_model, step)
 
-                cut_trainer.train_cut(batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
+                    cut_trainer.train_cut(data, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
+
+
+
+
+                # train_seg_loss, us_rendered = module.training_step(batch_data_ct)
+                # train_seg_loss.backward()
+                # # log_model_gradients(inner_model, step)
+                # module.optimizer.step()
+
+                # print(f"{step}/{len(train_dataset_ct_labelmaps) // train_loader_ct_labelmaps.batch_size}, seg_train_loss: {train_seg_loss.item():.4f}")
+                # if hparams.logging: wandb.log({"seg_train_loss_step": train_seg_loss.item()}, step=step)
+                # train_losses.append(train_seg_loss.item())
+
+                # acoustic_impedance_dict_before_cut = inner_model.acoustic_impedance_dict
+                # plotter.log_us_rendering_values(inner_model, step)
+
+                # cut_trainer.train_cut(batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
                 
-                if not torch.equal(acoustic_impedance_dict_before_cut, inner_model.acoustic_impedance_dict):
-                    print(f"--------------- US PARAMS CHANGED --------------")
+                # if not torch.equal(acoustic_impedance_dict_before_cut, inner_model.acoustic_impedance_dict):
+                #     print(f"--------------- US PARAMS CHANGED --------------")
 
         
-        print(f"--------------- init_CUT: {init_CUT} -------------- epoch: ", epoch)
+        print(f"--------------- ONLY CUT: {only_CUT} -------------- epoch: ", epoch)
+        print(f"---------------ONLLY SEGNET: {only_SEGNET} -------------- epoch: ", epoch)
         
         # ---------------------
         # SEG NET VALIDATION
         # ---------------------
-        if epoch % hparams.validate_every_n_steps == 0 and epoch > EPOCHS_INIT_CUT:
+        if epoch % hparams.validate_every_n_steps == 0 and epoch > EPOCHS_ONLY_CUT:
             module.eval()
             module.outer_model.eval()
             inner_model.eval()
             val_step = 0
             # VALIDATION only SEG NET
-            print(f"--------------- VALIDATION ONLY SEG NET ------------")
+            print(f"--------------- VALIDATION SEG NET ------------")
             with torch.no_grad():
                 for val_batch_data_ct in tqdm(val_loader_ct_labelmaps, total=len(val_loader_ct_labelmaps), ncols= 100):
                     val_step += 1
 
-                    val_loss, dict = module.validation_step(val_batch_data_ct, epoch)
-                    print(f"{val_step}/{len(val_dataset_ct_labelmaps) // val_loader_ct_labelmaps.batch_size}, seg_val_loss: {val_loss.item():.4f}")
-                    if hparams.logging: wandb.log({"seg_val_loss_step": val_loss.item()})
+                    rendered_seg_pred, us_sim, val_loss_step, dict = module.validation_step(val_batch_data_ct, epoch)
+                    # print(f"{val_step}/{len(val_dataset_ct_labelmaps) // val_loader_ct_labelmaps.batch_size}, seg_val_loss: {val_loss.item():.4f}")
+                    if hparams.logging: wandb.log({"seg_val_loss_step": val_loss_step.item()})
 
-                    valid_losses.append(val_loss.item())
+                    valid_losses.append(val_loss_step.item())
                     plotter.validation_batch_end(dict)
+
+                    if epoch> 10 and hparams.plot_avg_seg_px_dff and hparams.pred_label in val_batch_data_ct[0]:
+                        print(f"--------------- INFER US IMGS THROUGH SEG NET ------------")
+                        cut_model.eval()
+                        try:
+                            data_cut_real_us = next(dataloader_real_us_iterator)
+                        except StopIteration:
+                            dataloader_real_us_iterator = iter(real_us_train_loader)
+                            data_cut_real_us = next(dataloader_real_us_iterator)
+                        
+                        reconstructed_us = cut_model.netG(data_cut_real_us['A']) #.to('cpu')
+
+                        reconstructed_us = (reconstructed_us / 2 ) + 0.5 # from [-1,1] to [0,1]
+                        _, reconstructed_seg_pred  = module.seg_net_forward(reconstructed_us, reconstructed_us)
+                        #calc the diff bw avg number of white pixels bw the seg predictions of rendered and recoconstructed 
+
+                        seg_pred_mean_diff = torch.abs(torch.mean(reconstructed_seg_pred) - torch.mean(rendered_seg_pred))
+                        print(f"seg_pred_mean_diff: {seg_pred_mean_diff.item():.4f}")
+
+                        if hparams.logging: 
+                            wandb.log({"seg_pred_mean_diff": seg_pred_mean_diff.item()})
+                            plot_fig = plotter.plot_stopp_crit(caption="stopp_crit_|real_us|reconstructed_us|seg_pred_real|seg_pred_rendered|us_rendered",
+                                                    imgs=[data_cut_real_us['A'], reconstructed_us, reconstructed_seg_pred, rendered_seg_pred, us_sim], 
+                                                    img_text='mean_diff=' + "{:.4f}".format(seg_pred_mean_diff.item()), epoch=epoch)
+
+
+
             
             # calculate average loss over an epoch
             train_loss = np.average(train_losses)
@@ -352,6 +439,12 @@ if __name__ == "__main__":
             if hparams.logging: wandb.log({"seg_val_loss_epoch": valid_loss, "epoch": epoch})
 
             if hparams.logging: plotter.validation_epoch_end()
+
+
+
+
+
+
             
             print(f"--------------- END SEG NETWORK VALIDATION ------------")
 
@@ -362,65 +455,68 @@ if __name__ == "__main__":
             # opt_cut.gpu_ids = '-1'
             # run inference
 
-            print(f"--------------- STOPPING CRITERIA CHECK ------------")
-            with torch.no_grad():
-                for nr, batch_data_real_us_test in tqdm(enumerate(real_us_stopp_crit_test_dataloader), total=len(real_us_stopp_crit_test_dataloader), ncols= 100):
-                    real_us_test_img, real_us_test_img_label = batch_data_real_us_test[0].to(hparams.device), batch_data_real_us_test[1].to(hparams.device).float()
-                    # real_us_test_img, real_us_test_img_label = batch_data_real_us_test[0].to('cpu'), batch_data_real_us_test[1].to('cpu')
-                    reconstructed_us = cut_model.netG(real_us_test_img) #.to('cpu')
-                    reconstructed_us = transforms.functional.hflip(reconstructed_us)
-                    real_us_test_img_label = transforms.functional.hflip(real_us_test_img_label)
+            if hparams.stopping_crit_gt_imgs:
+                print(f"--------------- STOPPING CRITERIA CHECK ------------")
+                with torch.no_grad():
+                    for nr, batch_data_real_us_test in tqdm(enumerate(real_us_stopp_crit_test_dataloader), total=len(real_us_stopp_crit_test_dataloader), ncols= 100, position=0, leave=True):
+                        real_us_test_img, real_us_test_img_label = batch_data_real_us_test[0].to(hparams.device), batch_data_real_us_test[1].to(hparams.device).float()
+                        # real_us_test_img, real_us_test_img_label = batch_data_real_us_test[0].to('cpu'), batch_data_real_us_test[1].to('cpu')
+                        reconstructed_us = cut_model.netG(real_us_test_img) #.to('cpu')
+                        reconstructed_us = transforms.functional.hflip(reconstructed_us)
+                        real_us_test_img_label = transforms.functional.hflip(real_us_test_img_label)
 
-                    # reconstructed_us_n = module.normalize(reconstructed_us)
-                    reconstructed_us = (reconstructed_us / 2 ) + 0.5 # from [-1,1] to [0,1]
+                        reconstructed_us = (reconstructed_us / 2 ) + 0.5 # from [-1,1] to [0,1]
 
-                    # self.fake_B = reconstructed_us[:self.real_A.size(0)] #???
-                    # cut_model.forward()
-                    # cut_model.compute_visuals()
-                    # visuals = cut_model.get_current_visuals()  # get image results   for label, image in visuals.items():
-                    # output_cut = visuals['fake_B']
+                        # self.fake_B = reconstructed_us[:self.real_A.size(0)] #???
+                        # cut_model.forward()
+                        # cut_model.compute_visuals()
+                        # visuals = cut_model.get_current_visuals()  # get image results   for label, image in visuals.items():
+                        # output_cut = visuals['fake_B']
 
-                    stop_criterion_loss, seg_pred  = module.seg_net_forward(reconstructed_us, real_us_test_img_label)
-                    print(f"stop_criterion_loss: {stop_criterion_loss.item():.4f}")
-                    if hparams.logging: wandb.log({"stop_criterion_loss": stop_criterion_loss.item()})
-                    stopp_crit_losses.append(stop_criterion_loss.item())
+                        stop_criterion_loss, seg_pred  = module.seg_net_forward(reconstructed_us, real_us_test_img_label)
+                        print(f"stop_criterion_loss: {stop_criterion_loss.item():.4f}")
+                        if hparams.logging: wandb.log({"stop_criterion_loss": stop_criterion_loss.item()})
+                        stopp_crit_losses.append(stop_criterion_loss.item())
 
-                    # inference_plot = {f'real_us': (real_us_test_img.detach()),
-                    #                 f'reconstructed_us': reconstructed_us.detach(),
-                    #                 f'seg_pred': seg_pred.detach(),
-                    #                 f'gt_label': real_us_test_img_label.detach(),
-                    #                 }
+                        # inference_plot = {f'real_us': (real_us_test_img.detach()),
+                        #                 f'reconstructed_us': reconstructed_us.detach(),
+                        #                 f'seg_pred': seg_pred.detach(),
+                        #                 f'gt_label': real_us_test_img_label.detach(),
+                        #                 }
+                        
+                        if nr <= 10:     # log only the first 10  
+                            plot_fig = plotter.plot_stopp_crit(caption="stopp_crit_|real_us|reconstructed_us|seg_pred|gt_label",
+                                                    imgs=[real_us_test_img, reconstructed_us, seg_pred, real_us_test_img_label], 
+                                                    img_text='loss=' + "{:.4f}".format(stop_criterion_loss.item()), epoch=epoch)
+
+                        # plotter.plot_images(inference_plot, epoch, wandb)
                     
-                    if nr <= 10:     # log only the first 10  
-                        plot_fig = plotter.plot_stopp_crit([real_us_test_img, reconstructed_us, seg_pred, real_us_test_img_label], epoch)
 
-                    # plotter.plot_images(inference_plot, epoch, wandb)
+                stop_criterion_loss_avg_epoch = np.average(stopp_crit_losses)
+                print(f"stop_criterion_loss_avg_epoch: {stop_criterion_loss_avg_epoch}")
+                if hparams.logging: wandb.log({"stop_criterion_loss_avg_epoch": stop_criterion_loss_avg_epoch})
+
+                # early_stopping needs the validation loss to check if it has decresed, 
+                # and if it has, it will make a checkpoint of the current model
+                if(epoch > hparams.min_epochs):
+                    early_stopping(stop_criterion_loss_avg_epoch, epoch, module)
                 
+                if early_stopping.early_stop:
+                    print("Early stopping")
+                    break
+                stopp_crit_losses = []
 
-            stop_criterion_loss_avg_epoch = np.average(stopp_crit_losses)
-            print(f"stop_criterion_loss_avg_epoch: {stop_criterion_loss_avg_epoch}")
-            if hparams.logging: wandb.log({"stop_criterion_loss_avg_epoch": stop_criterion_loss_avg_epoch})
-
-            # early_stopping needs the validation loss to check if it has decresed, 
-            # and if it has, it will make a checkpoint of the current model
-            if(epoch > hparams.min_epochs):
-                early_stopping(stop_criterion_loss_avg_epoch, epoch, module)
-            
-            if early_stopping.early_stop:
-                print("Early stopping")
-                break
             
             # clear lists to track next epoch
             train_losses = []
             valid_losses = []
-            stopp_crit_losses = []
 
     
 
 
         
-    print(f'train completed, avg_train_losses: {avg_train_losses:.4f} avg_valid_losses: {avg_valid_losses} \n'
-          f'best val_loss: {early_stopping.val_loss_min} at best_epoch: {early_stopping.best_epoch}')
+    print(f'train completed, avg_train_losses: {avg_train_losses:.4f} avg_valid_losses: {avg_valid_losses}')
+    print(f'best val_loss: {early_stopping.val_loss_min} at best_epoch: {early_stopping.best_epoch}')
 
 
 
