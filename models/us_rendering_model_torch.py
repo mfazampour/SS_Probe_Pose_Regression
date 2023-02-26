@@ -135,6 +135,8 @@ class UltrasoundRendering(torch.nn.Module):
         dists = dists.squeeze(-1)                                             # dists.shape=(W, H-1)
         dists = torch.cat([dists, dists[:, -1, None]], dim=-1)                 # dists.shape=(W, H)
 
+
+
         attenuation = torch.exp(-attenuation_medium_map * dists)
         attenuation_total = torch.cumprod(attenuation, dim=1, dtype=torch.float32, out=None)
 
@@ -150,13 +152,16 @@ class UltrasoundRendering(torch.nn.Module):
         reflection_total_plot = torch.log(reflection_total + torch.finfo(torch.float32).eps)
 
         texture_noise = torch.randn(H, W, dtype=torch.float32).to(device='cuda')
-        scattering_probability = torch.randn(H, W, dtype=torch.float32).to(device='cuda') + 1   #?????
+        scattering_probability = torch.randn(H, W, dtype=torch.float32).to(device='cuda') #+ 1   #?????
 
         scattering_zero = torch.zeros(H, W, dtype=torch.float32).to(device='cuda')
 
+
+
         z = mu_1_map - scattering_probability
         sigmoid_map = torch.sigmoid(beta_coeff_scattering * z)
-        scatterers_map =  (1 - sigmoid_map) * (texture_noise * sigma_0_map + mu_0_map) + sigmoid_map * scattering_zero
+        # scatterers_map =  (1 - sigmoid_map) * (texture_noise * sigma_0_map + mu_0_map) + sigmoid_map * scattering_zero
+        scatterers_map =  (sigmoid_map) * (texture_noise * sigma_0_map + mu_0_map) + (1 -sigmoid_map) * scattering_zero
 
         # scatterers_map = torch.where(scattering_probability <= mu_1_map, 
         #                     texture_noise * sigma_0_map + mu_0_map, 
@@ -308,6 +313,12 @@ class UltrasoundRendering(torch.nn.Module):
 
 
         # attenuation_medium_map.register_hook(lambda grad: print(sum(grad)))
+
+        attenuation_medium_map = torch.clamp(attenuation_medium_map, 0, 10)
+        acoustic_imped_map = torch.clamp(acoustic_imped_map, 0, 10)
+        sigma_0_map = torch.clamp(sigma_0_map, 0, 1)
+        mu_1_map = torch.clamp(mu_1_map, 0, 1)
+        mu_0_map = torch.clamp(mu_0_map, 0, 1)
 
         ret_list = self.rendering(ct_slice.shape[0], ct_slice.shape[1], z_vals=z_vals,
             attenuation_medium_map=attenuation_medium_map, refl_map=refl_map, boundary_map=boundary_map, 
