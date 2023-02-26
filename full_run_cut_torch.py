@@ -6,8 +6,7 @@ import torch
 import time
 import wandb
 from tqdm.auto import tqdm, trange
-from time import sleep
-
+import torchvision
 # from tensorboardX import SummaryWriter
 # import monai
 import configargparse
@@ -30,8 +29,7 @@ from torch.nn.functional import kl_div
 from full_run_torch import training_loop_seg_net
 
 MANUAL_SEED = False
-EPOCHS_ONLY_CUT = 0
-EPOCHS_ONLY_SEG_NET = 0
+
 
 # torch.use_deterministic_algorithms(True, warn_only=True)
 # tb_logger = SummaryWriter('log_dir/cactuss_end2end')
@@ -53,47 +51,92 @@ class CUTTrainer():
         self.dataset_real_us = dataset_real_us
         self.real_us_train_loader = real_us_train_loader
         self.init_cut = True
+        self.cut_plot_figs = []
+        self.data_cut_real_us = []
 
 
-    def train_cut(self, batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter):
+    def cut_optimize_parameters(self, module, dice_loss):
+        # update D
+        self.cut_model.set_requires_grad(self.cut_model.netD, True)
+        self.cut_model.optimizer_D.zero_grad()
+        self.cut_model.loss_D = self.cut_model.compute_D_loss()
+        self.cut_model.loss_D.backward()
+        self.cut_model.optimizer_D.step()
+
+        # update G
+        self.cut_model.set_requires_grad(self.cut_model.netD, False)
+        self.cut_model.optimizer_G.zero_grad()
+        if self.cut_model.opt.netF == 'mlp_sample':
+            self.cut_model.optimizer_F.zero_grad()
+        self.cut_model.loss_G = self.cut_model.compute_G_loss()
+        
+        self.cut_model.set_requires_grad(module.USRenderingModel, False)
+        self.cut_model.loss_G.backward()
+        # self.cut_model.set_requires_grad(module.USRenderingModel, True)
+        # loss = self.cut_model.loss_G #+ dice_loss
+        # loss.backward()
+
+    def cut_optimizer_step(self):
+        self.cut_model.optimizer_G.step()
+        if self.cut_model.opt.netF == 'mlp_sample':
+            self.cut_model.optimizer_F.step()
+
+
+    def forward_cut(self, us_sim):
+        transform_B = cut_get_transform(opt_cut, grayscale=False, convert=False) 
+        data_cut_rendered_us = transform_B(us_sim)
+        self.data_cut_real_us['B'] = data_cut_rendered_us   # add cut_model.real_B
+        self.cut_model.forward()
+
+
+    def train_cut(self, module, us_sim_resized, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter):
         # with torch.autograd.detect_anomaly():
         
-        # us_rendered = module.us_rendering_forward(batch_data_ct=batch_data_ct)   # just getting the image, no gradients
-        ct_slice = batch_data_ct[0].to(hparams.device)
-        us_sim = self.inner_model(ct_slice.squeeze()) 
-        us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (256, 256)).float().detach()
-        # us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (256, 256)).float()   #dont detach if we want end to end???
-        # # transform = T.ToPILImage()
-        # us_rendered = transform(us_sim).convert('RGB')
+        # ct_slice = batch_data_ct[0].to(hparams.device)
+        # us_sim = self.inner_model(ct_slice.squeeze()) 
+        # us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (256, 256)).float().detach()    # just getting the image, no gradients
 
         try:
-            data_cut_real_us = next(dataloader_real_us_iterator)
+            self.data_cut_real_us = next(dataloader_real_us_iterator)
         except StopIteration:
             dataloader_real_us_iterator = iter(self.real_us_train_loader)
-            data_cut_real_us = next(dataloader_real_us_iterator)
+            self.data_cut_real_us = next(dataloader_real_us_iterator)
         
-        data_cut_real_us["A"] = data_cut_real_us["A"].to(hparams.device)
-        real_us_batch_size = data_cut_real_us["A"].size(0)
+        self.data_cut_real_us["A"] = self.data_cut_real_us["A"].to(hparams.device)
+        real_us_batch_size = self.data_cut_real_us["A"].size(0)
         self.total_iter += real_us_batch_size
         epoch_iter += real_us_batch_size
 
         transform_B = cut_get_transform(opt_cut, grayscale=False, convert=False)    #it is already grayscale and tensor
         data_cut_rendered_us = transform_B(us_sim_resized)
         # data_cut_rendered_us = data_cut_rendered_us.unsqueeze(0)
-        data_cut_real_us['B'] = data_cut_rendered_us   # add cut_model.real_B
+        self.data_cut_real_us['B'] = data_cut_rendered_us   # add cut_model.real_B
         
         optimize_start_time = time.time()
         # if epoch == opt_cut.epoch_count and self.init_cut:    #initialize only on epoch 1 
         if self.init_cut:    #initialize cut
             print(f"--------------- INIT CUT --------------")
+            # self.data_cut_real_us['B'] = data_cut_rendered_us.detach()
             self.init_cut = False
-            self.cut_model.data_dependent_initialize(data_cut_real_us)
+            self.cut_model.data_dependent_initialize(self.data_cut_real_us)
             self.cut_model.setup(opt_cut)               # regular setup: load and print networks; create schedulers
             self.cut_model.parallelize()
 
-        self.cut_model.set_input(data_cut_real_us)  # unpack data from dataset and apply preprocessing
-        self.cut_model.optimize_parameters()   # calculate loss functions, get gradients, update network weights
+        self.cut_model.set_input(self.data_cut_real_us)  # unpack data from dataset and apply preprocessing
+        # forward
+        self.cut_model.forward()
+
+        self.cut_optimize_parameters(module, None)
+        self.cut_optimizer_step()
+
+        # self.cut_model.optimize_parameters()   # calculate loss functions, get gradients, update network weights, backward()
+           # calculate loss functions, get gradients, update network weights, backward()
         self.optimize_time = (time.time() - optimize_start_time) / real_us_batch_size * 0.005 + 0.995 * self.optimize_time
+
+        # self.cut_model.compute_visuals()
+        # cut_imgs = self.cut_model.get_current_visuals()
+        # idt_B = self.cut_model.idt_B
+
 
         iter_start_time = time.time() 
         if self.total_iter % opt_cut.print_freq == 0:
@@ -102,8 +145,7 @@ class CUTTrainer():
         #Print CUT results
         if self.total_iter % opt_cut.display_freq == 0:   # display images and losses on wandb
             self.cut_model.compute_visuals()
-            # visualizer.display_current_results(self.cut_model.get_current_visuals(), epoch, None, wandb)
-            plotter.plot_images(self.cut_model.get_current_visuals(), epoch, wandb)
+            self.cut_plot_figs.append(plotter.plot_images(self.cut_model.get_current_visuals(), epoch, wandb, plot_single=False))
             losses = self.cut_model.get_current_losses()
             opt_cut.visualizer.print_current_losses(epoch, epoch_iter, losses, self.optimize_time, self.t_data, wandb)
 
@@ -263,7 +305,7 @@ if __name__ == "__main__":
                                     ckpt_save_path = f'{hparams.output_path}/best_checkpoint_{hparams.exp_name}.pt', verbose=True)
     
 
-    train_losses, valid_losses, stopp_crit_losses, avg_train_losses, avg_valid_losses = ([] for i in range(5))
+    train_losses, valid_losses, stopp_crit_losses, avg_train_losses, avg_valid_losses, avg_seg_pred_mean_diff = ([] for i in range(6))
     # G_train_losses, D_train_losses, D_real_train_losses, D_fake_train_losses = ([] for i in range(4))
     # G_val_losses, D_val_losses, D_real_val_losses, D_fake_val_losses = ([] for i in range(4))
 
@@ -284,19 +326,19 @@ if __name__ == "__main__":
         module.outer_model.train()
         inner_model.train()
 
-        if epoch <= EPOCHS_ONLY_SEG_NET and EPOCHS_ONLY_SEG_NET > 0:
+        if epoch <= hparams.epochs_only_seg_net and hparams.epochs_only_seg_net > 0:
             # print(f"--------------- INIT SEG NET ------------", cut_trainer.total_iter)
             #train SEG NET only
             training_loop_seg_net(hparams, module, inner_model, hparams.batch_size_manual, train_loader_ct_labelmaps, train_losses, plotter)
 
         # opt_cut.isTrain = True
-        if epoch <= EPOCHS_ONLY_CUT and EPOCHS_ONLY_CUT > 0:
+        if epoch <= hparams.epochs_only_cut and hparams.epochs_only_cut > 0:
             for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps), ncols= 100, position=0, leave=True):
                 # print(f"--------------- INIT CUT ------------", cut_trainer.total_iter)
                 #train CUT only
                 cut_trainer.train_cut(batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
     
-        if epoch > EPOCHS_ONLY_SEG_NET:
+        if epoch > hparams.epochs_only_seg_net:
             # print(f"--------------- TRAIN JOINTLY SEG NET+CUT ------------", cut_trainer.total_iter)
             if only_CUT: only_CUT = False
             if only_SEGNET: only_SEGNET = False
@@ -304,25 +346,42 @@ if __name__ == "__main__":
             #Train US Renderer + SEG NET
             step += 1
 
-            batch_loss_list =[]
+            batch_loss_list = []
             if hparams.batch_size_manual == 1:
                 # for batch_data in train_loader:
                 for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps), ncols= 100):   #, position=0, leave=True):
                     step += 1
                     module.optimizer.zero_grad()
                     input, label = module.get_data(batch_data_ct)
-                    loss, us_sim, prediction = module.step(input, label)
-                    # check_gradients(module)
+                    
+                    us_sim = module.rendering_forward(input)
+
+                    us_sim_cut = us_sim.clone().detach()
+                    cut_trainer.train_cut(module, us_sim_cut, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
+
+                    # cut_trainer.train_cut(us_sim, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
+                    cut_trainer.forward_cut(us_sim)
+                    idt_B = cut_trainer.cut_model.idt_B
+                    # idt_B = idt_B.clone()
+                    idt_B = (idt_B / 2 ) + 0.5 # from [-1,1] to [0,1]
+                    loss, prediction = module.seg_forward(idt_B, label)
+                    # cut_trainer.cut_model.set_requires_grad(cut_trainer.cut_model.netG, False)
+                    # cut_trainer.cut_model.set_requires_grad(module.USRenderingModel, True)
                     loss.backward()
+
+                    # loss, us_sim, prediction = module.step(input, label)
+                    # check_gradients(module)
+
+                    # with torch.autograd.detect_anomaly():
                     # log_model_gradients(inner_model, step)
                     module.optimizer.step()
 
                     # print(f"{step}/{len(train_loader_ct_labelmaps.dataset) // train_loader_ct_labelmaps.batch_size}, train_loss: {loss.item():.4f}")
                     if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
                     train_losses.append(loss.item())
-                    if hparams.logging: plotter.log_us_rendering_values(inner_model, step)
+                    if hparams.logging: plotter.log_us_rendering_values(module.USRenderingModel, step)
                     
-                    cut_trainer.train_cut(batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
+                    # cut_trainer.train_cut(batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
 
             else:
                 dataloader_iterator = iter(train_loader_ct_labelmaps)
@@ -352,6 +411,10 @@ if __name__ == "__main__":
 
                     cut_trainer.train_cut(data, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
 
+            if len(cut_trainer.cut_plot_figs) > 0: 
+                plotter.log_image(torchvision.utils.make_grid(cut_trainer.cut_plot_figs), "real_A|fake_B|real_B|idt_B")
+                cut_trainer.cut_plot_figs = []
+
 
 
 
@@ -379,15 +442,16 @@ if __name__ == "__main__":
         # ---------------------
         # SEG NET VALIDATION
         # ---------------------
-        if epoch % hparams.validate_every_n_steps == 0 and epoch > EPOCHS_ONLY_CUT:
+        if epoch % hparams.validate_every_n_steps == 0 and epoch > hparams.epochs_only_cut:
             module.eval()
             module.outer_model.eval()
             inner_model.eval()
             val_step = 0
             # VALIDATION only SEG NET
             print(f"--------------- VALIDATION SEG NET ------------")
+            stopp_crit_plot_figs = []
             with torch.no_grad():
-                for val_batch_data_ct in tqdm(val_loader_ct_labelmaps, total=len(val_loader_ct_labelmaps), ncols= 100):
+                for nr, val_batch_data_ct in tqdm(enumerate(val_loader_ct_labelmaps), total=len(val_loader_ct_labelmaps), ncols= 100):
                     val_step += 1
 
                     rendered_seg_pred, us_sim, val_loss_step, dict = module.validation_step(val_batch_data_ct, epoch)
@@ -397,7 +461,7 @@ if __name__ == "__main__":
                     valid_losses.append(val_loss_step.item())
                     plotter.validation_batch_end(dict)
 
-                    if epoch> 10 and hparams.plot_avg_seg_px_dff and hparams.pred_label in val_batch_data_ct[0]:
+                    if epoch > hparams.epochs_check_stopp_crit and hparams.plot_avg_seg_px_dff and hparams.pred_label in val_batch_data_ct[0]:
                         print(f"--------------- INFER US IMGS THROUGH SEG NET ------------")
                         cut_model.eval()
                         try:
@@ -413,13 +477,23 @@ if __name__ == "__main__":
                         #calc the diff bw avg number of white pixels bw the seg predictions of rendered and recoconstructed 
 
                         seg_pred_mean_diff = torch.abs(torch.mean(reconstructed_seg_pred) - torch.mean(rendered_seg_pred))
+                        avg_seg_pred_mean_diff.append(seg_pred_mean_diff.item())
+
                         print(f"seg_pred_mean_diff: {seg_pred_mean_diff.item():.4f}")
 
-                        if hparams.logging: 
+                        if hparams.logging and nr <= 10:
                             wandb.log({"seg_pred_mean_diff": seg_pred_mean_diff.item()})
                             plot_fig = plotter.plot_stopp_crit(caption="stopp_crit_|real_us|reconstructed_us|seg_pred_real|seg_pred_rendered|us_rendered",
                                                     imgs=[data_cut_real_us['A'], reconstructed_us, reconstructed_seg_pred, rendered_seg_pred, us_sim], 
-                                                    img_text='mean_diff=' + "{:.4f}".format(seg_pred_mean_diff.item()), epoch=epoch)
+                                                    img_text='mean_diff=' + "{:.4f}".format(seg_pred_mean_diff.item()), epoch=epoch, plot_single=False)
+                            stopp_crit_plot_figs.append(plot_fig)
+                
+                if len(stopp_crit_plot_figs) > 0: 
+                    plotter.log_image(torchvision.utils.make_grid(stopp_crit_plot_figs), "stopp_crit_|real_us|reconstructed_us|seg_pred_real|seg_pred_rendered|us_rendered")
+                    avg_seg_pred_mean_diff_mean = torch.mean(seg_pred_mean_diff)
+                    wandb.log({"seg_pred_mean_diff_epoch": avg_seg_pred_mean_diff_mean, "epoch": epoch})
+                    seg_pred_mean_diff = []
+                    stopp_crit_plot_figs = [] 
 
 
 
@@ -443,8 +517,6 @@ if __name__ == "__main__":
 
 
 
-
-
             
             print(f"--------------- END SEG NETWORK VALIDATION ------------")
 
@@ -455,8 +527,9 @@ if __name__ == "__main__":
             # opt_cut.gpu_ids = '-1'
             # run inference
 
-            if hparams.stopping_crit_gt_imgs:
-                print(f"--------------- STOPPING CRITERIA CHECK ------------")
+            if hparams.stopping_crit_gt_imgs and epoch > hparams.epochs_check_stopp_crit:
+                print(f"--------------- STOPPING CRITERIA US GT IMGS CHECK ------------")
+                stopp_crit_gt_imgs_plot_figs = []
                 with torch.no_grad():
                     for nr, batch_data_real_us_test in tqdm(enumerate(real_us_stopp_crit_test_dataloader), total=len(real_us_stopp_crit_test_dataloader), ncols= 100, position=0, leave=True):
                         real_us_test_img, real_us_test_img_label = batch_data_real_us_test[0].to(hparams.device), batch_data_real_us_test[1].to(hparams.device).float()
@@ -478,28 +551,29 @@ if __name__ == "__main__":
                         if hparams.logging: wandb.log({"stop_criterion_loss": stop_criterion_loss.item()})
                         stopp_crit_losses.append(stop_criterion_loss.item())
 
-                        # inference_plot = {f'real_us': (real_us_test_img.detach()),
-                        #                 f'reconstructed_us': reconstructed_us.detach(),
-                        #                 f'seg_pred': seg_pred.detach(),
-                        #                 f'gt_label': real_us_test_img_label.detach(),
-                        #                 }
-                        
-                        if nr <= 10:     # log only the first 10  
-                            plot_fig = plotter.plot_stopp_crit(caption="stopp_crit_|real_us|reconstructed_us|seg_pred|gt_label",
+                        if hparams.logging and nr <= 10:
+                            wandb.log({"stop_criterion_loss": stop_criterion_loss.item()})
+                            plot_fig = plotter.plot_stopp_crit(caption="stopp_crit_gt_|real_us|reconstructed_us|seg_pred|gt_label",
                                                     imgs=[real_us_test_img, reconstructed_us, seg_pred, real_us_test_img_label], 
-                                                    img_text='loss=' + "{:.4f}".format(stop_criterion_loss.item()), epoch=epoch)
+                                                    img_text='loss=' + "{:.4f}".format(stop_criterion_loss.item()), epoch=epoch, plot_single=False)
+                            stopp_crit_gt_imgs_plot_figs.append(plot_fig)
+                
+                if len(stopp_crit_gt_imgs_plot_figs) > 0: 
+                    plotter.log_image(torchvision.utils.make_grid(stopp_crit_gt_imgs_plot_figs), "stopp_crit_gt_|real_us|reconstructed_us|seg_pred|gt_label")
+                    avg_stop_criterion_loss = torch.mean(stopp_crit_losses)
+                    wandb.log({"avg_stop_criterion_loss_epoch": avg_stop_criterion_loss, "epoch": epoch})
+                    stopp_crit_losses = []
+                    stopp_crit_gt_imgs_plot_figs = [] 
+                
 
-                        # plotter.plot_images(inference_plot, epoch, wandb)
-                    
-
-                stop_criterion_loss_avg_epoch = np.average(stopp_crit_losses)
-                print(f"stop_criterion_loss_avg_epoch: {stop_criterion_loss_avg_epoch}")
-                if hparams.logging: wandb.log({"stop_criterion_loss_avg_epoch": stop_criterion_loss_avg_epoch})
+                # stop_criterion_loss_avg_epoch = np.average(stopp_crit_losses)
+                # print(f"stop_criterion_loss_avg_epoch: {stop_criterion_loss_avg_epoch}")
+                # if hparams.logging: wandb.log({"stop_criterion_loss_avg_epoch": stop_criterion_loss_avg_epoch})
 
                 # early_stopping needs the validation loss to check if it has decresed, 
                 # and if it has, it will make a checkpoint of the current model
                 if(epoch > hparams.min_epochs):
-                    early_stopping(stop_criterion_loss_avg_epoch, epoch, module)
+                    early_stopping(avg_stop_criterion_loss, epoch, module)
                 
                 if early_stopping.early_stop:
                     print("Early stopping")

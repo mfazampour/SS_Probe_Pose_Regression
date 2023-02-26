@@ -76,12 +76,23 @@ class SegmentationSim(torch.nn.Module):
         return loss, pred    
 
 
-    def us_rendering_forward(self, batch_data_ct):
+    # def us_rendering_forward(self, batch_data_ct):
+    #     input = batch_data_ct[0].to(self.params.device)
+    #     us_sim = self.USRenderingModel(input.squeeze()) 
+    #     return us_sim
 
-        input = batch_data_ct[0].to(self.params.device)
+
+    def rendering_forward(self, input):
         us_sim = self.USRenderingModel(input.squeeze()) 
-        
-        return us_sim
+        us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (SIZE_W, SIZE_H)).float()
+
+        return us_sim_resized          
+    
+    def seg_forward(self, us_sim, label):
+        output = self.outer_model.forward(us_sim)
+        loss, pred = self.loss_function(output, label)
+
+        return loss, pred          
 
 
     def step(self, input, label):
