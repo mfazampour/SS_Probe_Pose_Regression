@@ -7,6 +7,8 @@ import os
 from PIL import Image
 from torchvision import transforms
 import torch.nn.functional as F
+import cv2
+
 
 # 2 - lung; 3 - fat; 4 - vessel; 6 - kidney; 8 - muscle; 9 - background; 11 - liver; 12 - soft tissue; 13 - bone; 
 # Default Parameters from: https://github.com/Blito/burgercpp/blob/master/examples/ircad11/liver.scene , labels 8, 9 and 12 from the USHybridSim_auto_generate_imgs_masks_param2_3Splines.iws file
@@ -28,6 +30,7 @@ sigma_0_def_dict =        torch.tensor([0.1,    0.0,  0.01,  0.3,  0.3,  0.0,  0
 alpha_coeff_boundary_map = 0.1
 beta_coeff_scattering = 10
 TGC = 6
+CLAMP_VALS = True
 
 
 def gaussian_kernel(size: int, mean: float, std: float):
@@ -60,12 +63,7 @@ class UltrasoundRendering(torch.nn.Module):
         self.sigma_0_dict = torch.nn.Parameter(sigma_0_def_dict)
         self.labels = ["lung", "fat", "vessel", "kidney", "muscle", "background", "liver", "soft tissue", "bone"]
 
-        # self.acoustic_impedance_dict = acoustic_imped_def_dict
-        # self.attenuation_dict = attenuation_def_dict
-        # self.mu_0_dict = mu_0_def_dict
-        # self.mu_1_dict = mu_1_def_dict
-        # self.sigma_0_dict = sigma_0_def_dict
-
+        self.attenuation_medium_map, self.acoustic_imped_map, self.sigma_0_map, self.mu_1_map, self.mu_0_map  = ([] for i in range(5))
 
 
     def map_dict_to_array(self, dictionary, arr):
@@ -127,23 +125,28 @@ class UltrasoundRendering(torch.nn.Module):
 
 
 
-    def rendering(self, H, W, z_vals=None, attenuation_medium_map=None, refl_map=None,
-                    boundary_map=None, mu_0_map=None, mu_1_map=None, sigma_0_map=None):
 
+    def clamp_map_ranges(self):
+        self.attenuation_medium_map = torch.clamp(self.attenuation_medium_map, 0, 10)
+        self.acoustic_imped_map = torch.clamp(self.acoustic_imped_map, 0, 10)
+        self.sigma_0_map = torch.clamp(self.sigma_0_map, 0, 1)
+        self.mu_1_map = torch.clamp(self.mu_1_map, 0, 1)
+        self.mu_0_map = torch.clamp(self.mu_0_map, 0, 1)
+
+
+    def rendering(self, H, W, z_vals=None, refl_map=None, boundary_map=None):
         
         dists = torch.abs(z_vals[..., :-1, None] - z_vals[..., 1:, None])     # dists.shape=(W, H-1, 1)
         dists = dists.squeeze(-1)                                             # dists.shape=(W, H-1)
         dists = torch.cat([dists, dists[:, -1, None]], dim=-1)                 # dists.shape=(W, H)
 
-
-
-        attenuation = torch.exp(-attenuation_medium_map * dists)
+        attenuation = torch.exp(-self.attenuation_medium_map * dists)
         attenuation_total = torch.cumprod(attenuation, dim=1, dtype=torch.float32, out=None)
 
         gain_coeffs = np.linspace(1, TGC, attenuation_total.shape[1])
         gain_coeffs = np.tile(gain_coeffs, (attenuation_total.shape[0], 1))
         gain_coeffs = torch.tensor(gain_coeffs).to(device='cuda') 
-        attenuation_total = attenuation_total * gain_coeffs
+        attenuation_total = attenuation_total * gain_coeffs     #apply TGC
 
         # attenuation_total = (attenuation_total - torch.min(attenuation_total)) / (torch.max(attenuation_total) - torch.min(attenuation_total))
 
@@ -158,10 +161,10 @@ class UltrasoundRendering(torch.nn.Module):
 
 
 
-        z = mu_1_map - scattering_probability
+        z = self.mu_1_map - scattering_probability
         sigmoid_map = torch.sigmoid(beta_coeff_scattering * z)
         # scatterers_map =  (1 - sigmoid_map) * (texture_noise * sigma_0_map + mu_0_map) + sigmoid_map * scattering_zero
-        scatterers_map =  (sigmoid_map) * (texture_noise * sigma_0_map + mu_0_map) + (1 -sigmoid_map) * scattering_zero
+        scatterers_map =  (sigmoid_map) * (texture_noise * self.sigma_0_map + self.mu_0_map) + (1 -sigmoid_map) * scattering_zero
 
         # scatterers_map = torch.where(scattering_probability <= mu_1_map, 
         #                     texture_noise * sigma_0_map + mu_0_map, 
@@ -189,7 +192,6 @@ class UltrasoundRendering(torch.nn.Module):
         # intensity_map2 = b2 + r2
         # intensity_map2 = intensity_map2.squeeze()
         # intensity_map = torch.clamp(intensity_map, 0, 1)
-
 
 
         return intensity_map, attenuation_total, reflection_total_plot, scatterers_map, scattering_probability, border_convolution, texture_noise, b, r
@@ -248,6 +250,35 @@ class UltrasoundRendering(torch.nn.Module):
 
         return z_vals 
 
+    def warp_img(self, im_src):
+        im_src = np.swapaxes(im_src, 0, 1)
+        print(im_src.shape)
+        pts_src = np.array([[0, 0],
+                            [im_src.shape[1], 0],
+                            [0, im_src.shape[0]],
+                            [im_src.shape[1], im_src.shape[0]]])
+        
+        # Read destination image.
+        im_dst = np.array(im_src)
+        im_dst[:] = 0
+        # Four corners of the book in destination image.
+        pts_dst = np.array([[im_src.shape[1]/2 - 60, 0],
+                            [im_src.shape[1]/2 + 60, 0],
+                            [0, im_src.shape[0]],
+                            [im_src.shape[1], im_src.shape[0]]])
+
+        # Calculate Homography
+        h, status = cv2.findHomography(pts_src, pts_dst)
+
+        # Warp source image to destination based on homography
+        im_warped = cv2.warpPerspective(im_src, h, (im_dst.shape[1], im_dst.shape[0]))
+
+        self.plot_fig(im_src, "im_src", True)
+        self.plot_fig(im_dst, "im_dst", True)
+        self.plot_fig(im_warped, "warped_img", True)
+
+
+
 
     def forward(self, ct_slice):
         # self.plot_fig(ct_slice, "ct_slice", False)
@@ -260,34 +291,33 @@ class UltrasoundRendering(torch.nn.Module):
 
         #init tissue maps
         #generate 2D acousttic_imped map
-        acoustic_imped_map = self.map_dict_to_array(self.acoustic_impedance_dict, ct_slice)#.astype('int64'))
+        self.acoustic_imped_map = self.map_dict_to_array(self.acoustic_impedance_dict, ct_slice)#.astype('int64'))
         # print('acoustic_imped_map: ', acoustic_imped_map.requires_grad)
         # self.plot_fig(acoustic_imped_map, "acoustic_imped_map", False)
 
         #generate 2D attenuation map
-        attenuation_medium_map = self.map_dict_to_array(self.attenuation_dict, ct_slice)
+        self.attenuation_medium_map = self.map_dict_to_array(self.attenuation_dict, ct_slice)
         # print('attenuation_medium_map: ', attenuation_medium_map.requires_grad)
         # self.plot_fig(attenuation_medium_map, "attenuation_medium_map", False)
 
-        mu_0_map = self.map_dict_to_array(self.mu_0_dict, ct_slice)
+        self.mu_0_map = self.map_dict_to_array(self.mu_0_dict, ct_slice)
         # print('mu_0_map: ', mu_0_map.requires_grad)
 
-        mu_1_map = self.map_dict_to_array(self.mu_1_dict, ct_slice)
+        self.mu_1_map = self.map_dict_to_array(self.mu_1_dict, ct_slice)
         # print('mu_1_map: ', mu_1_map.requires_grad)
 
-        sigma_0_map = self.map_dict_to_array(self.sigma_0_dict, ct_slice)
+        self.sigma_0_map = self.map_dict_to_array(self.sigma_0_dict, ct_slice)
         # print('sigma_0_map: ', sigma_0_map.requires_grad)
 
 
-        acoustic_imped_map = torch.rot90(acoustic_imped_map, 1, [0, 1])
-        diff_arr = torch.diff(acoustic_imped_map, dim=0)
+        self.acoustic_imped_map = torch.rot90(self.acoustic_imped_map, 1, [0, 1])
+        diff_arr = torch.diff(self.acoustic_imped_map, dim=0)
         # print('diff_arr: ', diff_arr.requires_grad)
 
         diff_arr = torch.cat((torch.zeros(diff_arr.shape[1], dtype=torch.float32).unsqueeze(0).to(device='cuda'), diff_arr))
         # print('diff_arr2: ', diff_arr.requires_grad)
 
         # boundary_map = torch.where(diff_arr != 0., torch.tensor(1., dtype=torch.float32).to(device='cuda'), torch.tensor(0., dtype=torch.float32).to(device='cuda'))
-
         boundary_map =  -torch.exp(-(diff_arr**2)/alpha_coeff_boundary_map) + 1
         # print('boundary_map: ', boundary_map.requires_grad)
 
@@ -296,10 +326,10 @@ class UltrasoundRendering(torch.nn.Module):
         # self.plot_fig(diff_arr, "diff_arr", False)
         # self.plot_fig(boundary_map, "boundary_map", True)
 
-        shifted_arr = torch.roll(acoustic_imped_map, -1, dims=0)
+        shifted_arr = torch.roll(self.acoustic_imped_map, -1, dims=0)
         shifted_arr[-1:] = 0
 
-        sum_arr = acoustic_imped_map + shifted_arr
+        sum_arr = self.acoustic_imped_map + shifted_arr
         sum_arr[sum_arr == 0] = 1
         div = diff_arr / sum_arr
 
@@ -311,18 +341,12 @@ class UltrasoundRendering(torch.nn.Module):
 
         z_vals = self.render_rays(ct_slice.shape[0], ct_slice.shape[1])
 
-
         # attenuation_medium_map.register_hook(lambda grad: print(sum(grad)))
 
-        attenuation_medium_map = torch.clamp(attenuation_medium_map, 0, 10)
-        acoustic_imped_map = torch.clamp(acoustic_imped_map, 0, 10)
-        sigma_0_map = torch.clamp(sigma_0_map, 0, 1)
-        mu_1_map = torch.clamp(mu_1_map, 0, 1)
-        mu_0_map = torch.clamp(mu_0_map, 0, 1)
+        if CLAMP_VALS:
+            self.clamp_map_ranges()
 
-        ret_list = self.rendering(ct_slice.shape[0], ct_slice.shape[1], z_vals=z_vals,
-            attenuation_medium_map=attenuation_medium_map, refl_map=refl_map, boundary_map=boundary_map, 
-            mu_0_map=mu_0_map, mu_1_map=mu_1_map, sigma_0_map=sigma_0_map)
+        ret_list = self.rendering(ct_slice.shape[0], ct_slice.shape[1], z_vals=z_vals, refl_map=refl_map, boundary_map=boundary_map)
 
         self.intensity_map  = ret_list[0]
 

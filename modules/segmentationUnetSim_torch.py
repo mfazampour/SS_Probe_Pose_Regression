@@ -62,20 +62,13 @@ class SegmentationSim(torch.nn.Module):
                 
         return dict
 
+    
     # def seg_net_forward(self, input, label):
-    #     pred = self.outer_model(input)
-    #     loss = self.loss_function(pred, label)
+    #     output = self.outer_model.forward(input)
+    #     loss, pred = self.loss_function(output, label)
 
     #     return loss, pred    
-
     
-    def seg_net_forward(self, input, label):
-        output = self.outer_model.forward(input)
-        loss, pred = self.loss_function(output, label)
-
-        return loss, pred    
-
-
     # def us_rendering_forward(self, batch_data_ct):
     #     input = batch_data_ct[0].to(self.params.device)
     #     us_sim = self.USRenderingModel(input.squeeze()) 
@@ -85,6 +78,7 @@ class SegmentationSim(torch.nn.Module):
     def rendering_forward(self, input):
         us_sim = self.USRenderingModel(input.squeeze()) 
         us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (SIZE_W, SIZE_H)).float()
+        # self.USRenderingModel.plot_fig(us_sim.squeeze(), "us_sim", True)
 
         return us_sim_resized          
     
@@ -96,19 +90,9 @@ class SegmentationSim(torch.nn.Module):
 
 
     def step(self, input, label):
-        us_sim = self.USRenderingModel(input.squeeze()) 
-        # self.USRenderingModel.plot_fig(us_sim.squeeze(), "us_sim", True)
-
-        us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (SIZE_W, SIZE_H)).float()
-
-        output = self.outer_model.forward(us_sim_resized)
-        # self.USRenderingModel.plot_fig(output.squeeze(), "output", True)
-        # self.USRenderingModel.plot_fig(output.squeeze(), "output2", False)
-
+        us_sim_resized = self.rendering_forward(input)
+        loss, pred = self.seg_forward(self, us_sim_resized, label)
         # z_norm = self.normalize(z)
-        # loss = self.loss_function(output, label)
-        loss, pred = self.loss_function(output, label)
-
 
         return loss, us_sim_resized, pred          
 
@@ -122,39 +106,33 @@ class SegmentationSim(torch.nn.Module):
 
     def get_data(self, batch_data):
         input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
-        # print('FILENAME: ' + file_name)
         label = self.label_preprocess(label)
 
-        return input, label
+        return input, label, file_name
 
-
-    # def training_step(self, batch_data, batch_idx=None):
-
-    #     input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
-    #     # print('FILENAME: ' + file_name)
-    #     label = self.label_preprocess(label)
-        
-    #     self.optimizer.zero_grad()
-    #     loss, us_sim, prediction = self.step(input, label)
-
-    #     return loss, us_sim
-    
 
     def validation_step(self, batch_data, epoch, batch_idx=None):
         # print('IN VALIDATION... ')
-        input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
+        # input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
+        # label = self.label_preprocess(label)
 
-        # self.USRenderingModel.plot_fig(input.squeeze(), "input", False)
-        # self.USRenderingModel.plot_fig(label.squeeze(), "label", False)
-        
-        label = self.label_preprocess(label)
+        input, label, file_name = self.get_data(batch_data)
 
         loss, us_sim_resized, pred = self.step(input, label)
+
+        dict = self.plot_val_results(input, loss, file_name, label,pred, us_sim_resized, epoch)
+
+        return pred, us_sim_resized, loss, dict
+
+
+
+    def plot_val_results(self, input, loss, file_name, label,pred, us_sim_resized, epoch):
 
         val_images_plot = F.resize(input, (SIZE_W, SIZE_H)).float().unsqueeze(0)
         dict = self.create_return_dict('val', loss, val_images_plot, file_name[0], label, pred, us_sim_resized, epoch)
 
-        return pred, us_sim_resized, loss, dict
+        return dict
+
 
 
     def configure_optimizers(self, inner_model, outer_model):
@@ -176,3 +154,14 @@ class SegmentationSim(torch.nn.Module):
         return optimizer    
 
 
+    # def training_step(self, batch_data, batch_idx=None):
+
+    #     input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
+    #     # print('FILENAME: ' + file_name)
+    #     label = self.label_preprocess(label)
+        
+    #     self.optimizer.zero_grad()
+    #     loss, us_sim, prediction = self.step(input, label)
+
+    #     return loss, us_sim
+    
