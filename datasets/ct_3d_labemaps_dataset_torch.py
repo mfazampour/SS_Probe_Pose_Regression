@@ -6,7 +6,7 @@ import nibabel as nib
 import cv2
 from torch.utils.data import random_split
 import torchvision.transforms as transforms
-# from PIL import Image
+from PIL import Image
 
 
 ''' This data loader is designed to work with a dictionary of volumes,
@@ -14,6 +14,8 @@ where the keys are the volume names and the values are the 3D volume data
 represented as numpy arrays. The data loader returns a randomly selected 
 2D slice from each volume, along with the name of the volume the slice came from. '''
 
+SIZE_W = 256
+SIZE_H = 256
 class CT3DLabelmapDataset(Dataset):
     def __init__(self, params):
         self.params = params
@@ -32,12 +34,19 @@ class CT3DLabelmapDataset(Dataset):
 
         self.transform_img = transforms.Compose([
             transforms.ToTensor(),
-            # transforms.RandomRotation(degrees=(0, 30), fill=9),
             transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(1.0, 2.0), fill=9),
-            transforms.Resize([256, 256], transforms.InterpolationMode.NEAREST),
-            # transforms.RandomCrop(256),
+            transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
             transforms.RandomVerticalFlip()
         ])
+
+        if self.params.pred_label == 13:
+            self.transform_img = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(0.9, 1.0), fill=9),
+                transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
+                transforms.RandomVerticalFlip()
+        ])
+
 
         # self.transform_mask = transforms.Compose([
         #     transforms.ToTensor(),
@@ -46,7 +55,10 @@ class CT3DLabelmapDataset(Dataset):
 
 
     def __len__(self):
-        return self.total_slices  #// 100    #for debugging
+        if self.params.debug:
+            return self.total_slices  // 20    #for debugging
+        else:
+            return self.total_slices
 
     def read_volumes(self, full_labelmap_path):
         slice_indices = []
@@ -95,6 +107,19 @@ class CT3DLabelmapDataset(Dataset):
         torch.set_rng_state(state)
         mask_slice = self.transform_img(mask_slice)
         mask_slice = torch.where(mask_slice != self.params.pred_label, 0, 1)
+        
+        us_mask = Image.open('us_convex_mask.png')
+        us_mask = us_mask.resize((SIZE_W, SIZE_H))
+        us_mask = transforms.ToTensor()(us_mask)#.squeeze()#.to(device='cuda')
+        # us_mask = torch.where(us_mask > 0., torch.tensor(1., dtype=torch.int64), torch.tensor(0., dtype=torch.int64))
+        us_mask = torch.where(us_mask > 0, 1, 0)
+
+        mask_slice = mask_slice * torch.transpose(us_mask, 1, 2)
+
+        #for spine test
+        if self.params.pred_label == 13:
+            labelmap_slice = transforms.functional.hflip(labelmap_slice)
+            mask_slice = transforms.functional.hflip(mask_slice)
 
 
 

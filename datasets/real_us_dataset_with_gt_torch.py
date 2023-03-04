@@ -19,18 +19,20 @@ class RealUSGTDataset(Dataset):
         self.root_dir_imgs = root_dir + 'imgs/'
         self.root_dir_masks = root_dir + 'masks/'
         self.transform_img = transforms.Compose([
+            transforms.Grayscale(1),
+            transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.BICUBIC),
+            # transforms.Resize([286, 286], transforms.InterpolationMode.BICUBIC),
+            # transforms.RandomCrop(256),
             transforms.ToTensor(),
-            transforms.Resize([SIZE_W, SIZE_H], Image.BICUBIC),
-            transforms.Normalize((0.5,), (0.5,)),
+            transforms.Normalize((0.5,), (0.5,))
         ])
         self.transform_mask = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Resize([SIZE_W, SIZE_H], Image.BICUBIC),
-
+            transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST)
         ])
 
-        self.image_files = [f for f in os.listdir(self.root_dir_imgs) if f.endswith('.jpg') or f.endswith('.png')]
-        self.masks_files = [f for f in os.listdir(self.root_dir_masks) if f.endswith('.jpg') or f.endswith('.png')]
+        self.image_files = [f for f in sorted(os.listdir(self.root_dir_imgs)) if f.endswith('.jpg') or f.endswith('.png')]
+        self.masks_files = [f for f in sorted(os.listdir(self.root_dir_masks)) if f.endswith('.jpg') or f.endswith('.png')]
         print("len(self.image_files): ", len(self.image_files))
 
     def __len__(self):
@@ -38,16 +40,19 @@ class RealUSGTDataset(Dataset):
     
     def __getitem__(self, idx):
         image_path = os.path.join(self.root_dir_imgs, self.image_files[idx])
-        image = Image.open(image_path).convert('L')
+        image = Image.open(image_path)#.convert('L')
 
         mask_path = os.path.join(self.root_dir_masks, self.masks_files[idx])
         mask = np.asarray(Image.open(mask_path))
-        mask = np.where(mask > 0 , 1, 0)
 
         image = self.transform_img(image)
-        image = F.vflip(image)
+        
         mask = self.transform_mask(mask)
-        mask = F.vflip(mask)
+        mask = torch.where(mask > 0 , 1, 0)
+        
+        if "aorta_only" not in self.root_dir_imgs:
+            image = F.vflip(image)
+            mask = F.vflip(mask)
 
 
         return image, mask

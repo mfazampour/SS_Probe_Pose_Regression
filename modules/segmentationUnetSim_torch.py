@@ -2,8 +2,10 @@ import torch
 import torchvision.transforms.functional as F
 import torchvision.transforms as transforms
 from PIL import Image
-# import monai
+import monai
 from Losses.losses import SoftDiceLoss, DiceLoss
+from utils.helpers import AddGaussianNoise
+from models.unet_2d_github import dice_loss
 
 # torch.set_printoptions(profile="full")
 THRESHOLD = 0.5
@@ -11,36 +13,57 @@ SIZE_W = 256
 SIZE_H = 256
 
 class SegmentationSim(torch.nn.Module):
-    def __init__(self, params, outer_model, inner_model):
+    def __init__(self, params, inner_model=None, outer_model=None):
         super(SegmentationSim, self).__init__()
         self.params = params
-        self.outer_model = outer_model.to(params.device)
-        # self.criterion = SoftDiceLoss()  # hparams.device)
-        self.loss_function = DiceLoss() 
 
         # negative_penalty = negative_alpha * torch.sum(torch.nn.functional.relu(-1 * input))
-
-
-        # if outer_model=="UNet":
-        #     self.outer_model = monai.networks.nets.UNet(
-        #         spatial_dims=2,
-        #         in_channels=1,
-        #         out_channels=1,
-        #         channels=(16, 32, 64, 128, 256),
-        #         strides=(2, 2, 2, 2),
-        #         num_res_units=2,
-        #     ).to(params.device)
-        #         # define transforms for image and segmentation
-        #     # train_imtrans = transforms.Compose([
-        #     #         transforms.Resize([286, 286], Image.BICUBIC),
-        #     #         transforms.RandomCrop(256),
-        #     #         transforms.RandomHorizontalFlip()
-        #     # ])
-        # else:
-        #     self.outer_model=None
-
         self.USRenderingModel = inner_model.to(params.device)
-        # self.loss_function = monai.losses.DiceLoss(sigmoid=True)
+
+        #define transforms for image and segmentation
+        self.rendered_img_masks_random_transf = transforms.Compose([
+                transforms.Resize([286, 286], transforms.InterpolationMode.NEAREST),
+                transforms.RandomCrop(256),
+        ])
+
+        self.rendered_img_random_transf = transforms.Compose([
+                transforms.RandomApply([AddGaussianNoise(0., 0.05)], p=0.5),
+                transforms.RandomApply([transforms.GaussianBlur(kernel_size=(9, 9), sigma=(0.1, 5))], p=0.3),
+                # transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),    #???
+        ])
+
+        if params.seg_net_input_augmentations_noise_blur:
+            print(self.rendered_img_random_transf)
+
+        if params.seg_net_input_augmentations_rand_crop:
+            print(self.rendered_img_masks_random_transf)
+        
+
+        if params.outer_model_monai:
+            # channels = (16, 32, 64, 128, 256)
+            # channels = (64, 128, 256, 512, 1024)
+            channels = (32, 64, 128, 256, 512)
+            print('MONAI channels: ', channels, 'DROPOUT: ', params.dropout_ratio)
+            self.outer_model = monai.networks.nets.UNet(
+                spatial_dims=2,
+                in_channels=1,
+                out_channels=1,
+                channels=channels,
+                strides=(2, 2, 2, 2),
+                num_res_units=2,
+                dropout = params.dropout_ratio
+            ).to(params.device)
+
+            self.loss_function = monai.losses.DiceLoss(sigmoid=True)
+
+        elif self.params.outer_model_github:
+            self.outer_model = outer_model.to(params.device)
+        else:
+            self.outer_model = outer_model.to(params.device)
+            self.loss_function = SoftDiceLoss()  # without thresholding is soft DICE loss
+            # self.loss_function = DiceLoss()     #default threshold is 0.5
+
+
         self.optimizer = self.configure_optimizers(self.USRenderingModel, self.outer_model)
 
         print(f'OuterModel On cuda?: ', next(self.outer_model.parameters()).is_cuda)
@@ -84,7 +107,15 @@ class SegmentationSim(torch.nn.Module):
     
     def seg_forward(self, us_sim, label):
         output = self.outer_model.forward(us_sim)
-        loss, pred = self.loss_function(output, label)
+
+        if self.params.outer_model_monai:
+            loss = self.loss_function(output, label)
+            pred=output
+        elif self.params.outer_model_github:
+            loss = dice_loss(F.sigmoid(output.squeeze(1)), label.float(), multiclass=False)
+        else:
+            loss, pred = self.loss_function(output, label)
+
 
         return loss, pred          
 
@@ -148,7 +179,7 @@ class SegmentationSim(torch.nn.Module):
                     {"params": outer_model.parameters(), "lr": self.params.outer_model_learning_rate},
                     {"params": inner_model.parameters(), "lr": self.params.inner_model_learning_rate},
                 ],
-                lr=self.params.global_learning_rate,
+                # lr=self.params.global_learning_rate,
             )
 
         return optimizer    

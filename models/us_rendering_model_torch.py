@@ -31,36 +31,49 @@ alpha_coeff_boundary_map = 0.1
 beta_coeff_scattering = 10
 TGC = 6
 CLAMP_VALS = True
+CACTUSS_COEFF = 10000
 
 
 def gaussian_kernel(size: int, mean: float, std: float):
-    delta_t = 1
+    # delta_t = 1
     x_cos = np.array(list(range(-size, size+1)), dtype=np.float32)
-    x_cos *= delta_t
+    # x_cos *= delta_t
 
-    d1 = torch.distributions.Normal(mean, std*3)
-    d2 = torch.distributions.Normal(mean, std)
-    vals_x = d1.log_prob(torch.arange(-size, size+1, dtype=torch.float32)*delta_t).exp()
-    vals_y = d2.log_prob(torch.arange(-size, size+1, dtype=torch.float32)*delta_t).exp()
+    d1 = torch.distributions.Normal(mean, std)
+    d2 = torch.distributions.Normal(mean, std*3)
+    vals_x = d1.log_prob(torch.arange(-size, size+1, dtype=torch.float32)).exp()
+    vals_y = d2.log_prob(torch.arange(-size, size+1, dtype=torch.float32)).exp()
 
     gauss_kernel = torch.einsum('i,j->ij', vals_x, vals_y)
     
     return gauss_kernel / torch.sum(gauss_kernel).reshape(1, 1)
 
-g_kernel = gaussian_kernel(3, 0., 1.)
+# g_kernel = gaussian_kernel(3, 0., 1.)
+g_kernel = gaussian_kernel(3, 0., 0.5)
 g_kernel = torch.tensor(g_kernel[None, None, :, :], dtype=torch.float32).to(device='cuda')
+#g_kernel = torch.tensor(g_kernel[:, :, None, None], dtype=torch.float32).to(device='cuda')
 
 
 class UltrasoundRendering(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, params):
         super(UltrasoundRendering, self).__init__()
+        self.params = params
 
         # self.save_hyperparameters()
         self.acoustic_impedance_dict = torch.nn.Parameter(acoustic_imped_def_dict)#.to(device='cuda')
         self.attenuation_dict = torch.nn.Parameter(attenuation_def_dict)#.to(device='cuda')
-        self.mu_0_dict = torch.nn.Parameter(mu_0_def_dict)
-        self.mu_1_dict = torch.nn.Parameter(mu_1_def_dict)
-        self.sigma_0_dict = torch.nn.Parameter(sigma_0_def_dict)
+
+        if self.params.cactuss_mode:
+            self.mu_0_dict = torch.zeros(9).to(device='cuda') 
+            self.mu_1_dict = torch.zeros(9).to(device='cuda') 
+            self.sigma_0_dict = torch.zeros(9).to(device='cuda') 
+            TGC = CACTUSS_COEFF 
+
+        else:
+            self.mu_0_dict = torch.nn.Parameter(mu_0_def_dict)
+            self.mu_1_dict = torch.nn.Parameter(mu_1_def_dict)
+            self.sigma_0_dict = torch.nn.Parameter(sigma_0_def_dict)
+
         self.labels = ["lung", "fat", "vessel", "kidney", "muscle", "background", "liver", "soft tissue", "bone"]
 
         self.attenuation_medium_map, self.acoustic_imped_map, self.sigma_0_map, self.mu_1_map, self.mu_0_map  = ([] for i in range(5))
@@ -138,10 +151,12 @@ class UltrasoundRendering(torch.nn.Module):
         
         dists = torch.abs(z_vals[..., :-1, None] - z_vals[..., 1:, None])     # dists.shape=(W, H-1, 1)
         dists = dists.squeeze(-1)                                             # dists.shape=(W, H-1)
-        dists = torch.cat([dists, dists[:, -1, None]], dim=-1)                 # dists.shape=(W, H)
+        dists = torch.cat([dists, dists[:, -1, None]], dim=-1)                # dists.shape=(W, H)
 
         attenuation = torch.exp(-self.attenuation_medium_map * dists)
         attenuation_total = torch.cumprod(attenuation, dim=1, dtype=torch.float32, out=None)
+        if self.params.cactuss_mode: attenuation_total = attenuation_total * CACTUSS_COEFF #*10
+
 
         gain_coeffs = np.linspace(1, TGC, attenuation_total.shape[1])
         gain_coeffs = np.tile(gain_coeffs, (attenuation_total.shape[0], 1))
@@ -149,16 +164,16 @@ class UltrasoundRendering(torch.nn.Module):
         attenuation_total = attenuation_total * gain_coeffs     #apply TGC
 
         # attenuation_total = (attenuation_total - torch.min(attenuation_total)) / (torch.max(attenuation_total) - torch.min(attenuation_total))
-
-        reflection_total = torch.cumprod(1. - refl_map * boundary_map, dim=1, dtype=torch.float32, out=None)
-        reflection_total = reflection_total.squeeze(-1)
+        # if CACTUSS_MODE: refl_map = refl_map / 10  
+        # if CACTUSS_MODE: boundary_map = boundary_map / 2
+        reflection_total = torch.cumprod(1. - refl_map * boundary_map, dim=1, dtype=torch.float32, out=None) 
+        reflection_total = reflection_total.squeeze(-1) 
         reflection_total_plot = torch.log(reflection_total + torch.finfo(torch.float32).eps)
 
         texture_noise = torch.randn(H, W, dtype=torch.float32).to(device='cuda')
         scattering_probability = torch.randn(H, W, dtype=torch.float32).to(device='cuda') #+ 1   #?????
 
         scattering_zero = torch.zeros(H, W, dtype=torch.float32).to(device='cuda')
-
 
 
         z = self.mu_1_map - scattering_probability
@@ -181,9 +196,12 @@ class UltrasoundRendering(torch.nn.Module):
         border_convolution = torch.nn.functional.conv2d(input=boundary_map[None, None, :, :], weight=g_kernel, stride=1, padding="same")
         border_convolution = border_convolution.squeeze()
 
-        r = attenuation_total * reflection_total * refl_map * border_convolution
-        intensity_map = b + r
-        intensity_map = intensity_map.squeeze()
+        r = attenuation_total * reflection_total * refl_map * border_convolution 
+        if self.params.cactuss_mode:
+            intensity_map = r   #b + r 
+        else:
+            intensity_map = b + r 
+        intensity_map = intensity_map.squeeze() 
         intensity_map = torch.clamp(intensity_map, 0, 1)
 
 
@@ -244,8 +262,12 @@ class UltrasoundRendering(torch.nn.Module):
         N_rays = W  #rays.shape[0]
         # rays_o, rays_d = rays[:, 0:3], rays[:, 3:6]
 
-        t_vals = torch.linspace(0., 1., H).to(device='cuda')    #0-1 linearly spaced, shape H
-        z_vals = t_vals.unsqueeze(0).expand(N_rays , -1) * 3
+        t_vals = torch.linspace(0., 1., H).to(device='cuda')   #0-1 linearly spaced, shape H
+        # z_vals = t_vals.unsqueeze(0).expand(N_rays , -1) * 3 
+        if self.params.cactuss_mode: 
+            z_vals = t_vals.unsqueeze(0).expand(N_rays , -1)
+        else:
+            z_vals = t_vals.unsqueeze(0).expand(N_rays , -1) * 4 
 
 
         return z_vals 
@@ -278,10 +300,11 @@ class UltrasoundRendering(torch.nn.Module):
         self.plot_fig(im_warped, "warped_img", True)
 
 
-
+    def normalize(self, img):
+        return (img - torch.min(img)) / (torch.max(img) - torch.min(img))
 
     def forward(self, ct_slice):
-        # self.plot_fig(ct_slice, "ct_slice", False)
+        if self.params.debug:   self.plot_fig(ct_slice, "ct_slice", False)
         
         # self.acoustic_impedance_dict.register_hook(lambda grad: print(grad))
         # self.attenuation_dict.register_hook(lambda grad: print(grad))
@@ -317,8 +340,10 @@ class UltrasoundRendering(torch.nn.Module):
         diff_arr = torch.cat((torch.zeros(diff_arr.shape[1], dtype=torch.float32).unsqueeze(0).to(device='cuda'), diff_arr))
         # print('diff_arr2: ', diff_arr.requires_grad)
 
-        # boundary_map = torch.where(diff_arr != 0., torch.tensor(1., dtype=torch.float32).to(device='cuda'), torch.tensor(0., dtype=torch.float32).to(device='cuda'))
-        boundary_map =  -torch.exp(-(diff_arr**2)/alpha_coeff_boundary_map) + 1
+        if self.params.cactuss_mode: 
+            boundary_map = torch.where(diff_arr != 0., torch.tensor(1., dtype=torch.float32).to(device='cuda'), torch.tensor(0., dtype=torch.float32).to(device='cuda'))
+        else:
+            boundary_map =  -torch.exp(-(diff_arr**2)/alpha_coeff_boundary_map) + 1
         # print('boundary_map: ', boundary_map.requires_grad)
 
         boundary_map = torch.rot90(boundary_map, 3, [0, 1])
@@ -350,6 +375,8 @@ class UltrasoundRendering(torch.nn.Module):
 
         self.intensity_map  = ret_list[0]
 
+        if self.params.debug:  self.plot_fig(self.intensity_map, "intensity_map", True)
+
         # result_list = ["intensity_map", "attenuation_total", "reflection_total", 
         #                 "scatters_map", "scattering_probability", "border_convolution", 
         #                 "texture_noise", "b", "r"]
@@ -373,6 +400,6 @@ class UltrasoundRendering(torch.nn.Module):
         self.intensity_map_masked = self.intensity_map  * torch.transpose(us_mask, 0, 1) #np.transpose(us_mask)
         self.intensity_map_masked = torch.rot90(self.intensity_map_masked, 3, [0, 1])
 
-        # self.plot_fig(self.intensity_map_masked, "intensity_map_masked", True)
+        if self.params.debug:  self.plot_fig(self.intensity_map_masked, "intensity_map_masked", True)
         return self.intensity_map_masked
 
