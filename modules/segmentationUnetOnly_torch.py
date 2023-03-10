@@ -14,39 +14,17 @@ THRESHOLD = 0.5
 SIZE_W = 256
 SIZE_H = 256
 
-class SegmentationSim(torch.nn.Module):
-    def __init__(self, params, inner_model=None, outer_model=None):
-        super(SegmentationSim, self).__init__()
+class SegmentationUnet(torch.nn.Module):
+    def __init__(self, params, model=None):
+        super(SegmentationUnet, self).__init__()
         self.params = params
-
-        # negative_penalty = negative_alpha * torch.sum(torch.nn.functional.relu(-1 * input))
-        self.USRenderingModel = inner_model.to(params.device)
-
-        #define transforms for image and segmentation
-        self.rendered_img_masks_random_transf = transforms.Compose([
-                transforms.Resize([286, 286], transforms.InterpolationMode.NEAREST),
-                transforms.RandomCrop(256),
-        ])
-
-        self.rendered_img_random_transf = transforms.Compose([
-                transforms.RandomApply([AddGaussianNoise(0., 0.02)], p=0.5),
-                transforms.RandomApply([transforms.GaussianBlur(kernel_size=(9, 9), sigma=(0.1, 3))], p=0.5),
-                # transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),    #???
-        ])
-
-        if params.seg_net_input_augmentations_noise_blur:
-            print(self.rendered_img_random_transf)
-
-        if params.seg_net_input_augmentations_rand_crop:
-            print(self.rendered_img_masks_random_transf)
-        
 
         if params.outer_model_monai:
             # channels = (16, 32, 64, 128, 256)
             # channels = (64, 128, 256, 512, 1024)
             channels = (32, 64, 128, 256, 512)
             print('MONAI channels: ', channels, 'DROPOUT: ', params.dropout_ratio)
-            self.outer_model = monai.networks.nets.UNet(
+            self.model = monai.networks.nets.UNet(
                 spatial_dims=2,
                 in_channels=1,
                 out_channels=1,
@@ -59,18 +37,15 @@ class SegmentationSim(torch.nn.Module):
             self.loss_function = monai.losses.DiceLoss(sigmoid=True)
 
         elif self.params.outer_model_github:
-            self.outer_model = outer_model.to(params.device)
+            self.outer_model = model.to(params.device)
         else:
-            self.outer_model = outer_model.to(params.device)
+            self.outer_model = model.to(params.device)
             self.loss_function = SoftDiceLoss()  # without thresholding is soft DICE loss
             # self.loss_function = DiceLoss()     #default threshold is 0.5
 
+        self.optimizer = torch.optim.Adam(model.parameters(), self.params.outer_model_learning_rate)
 
-        self.optimizer, self.scheduler = self.configure_optimizers(self.USRenderingModel, self.outer_model)
-        # self.optimizer = self.configure_optimizers(self.USRenderingModel, self.outer_model)
-
-        print(f'OuterModel On cuda?: ', next(self.outer_model.parameters()).is_cuda)
-        print('USRenderingModel On cuda?: ', next(self.USRenderingModel.parameters()).is_cuda)
+        print(f'Model On cuda?: ', next(self.outer_model.parameters()).is_cuda)
 
 
     def normalize(self, img):
@@ -94,25 +69,10 @@ class SegmentationSim(torch.nn.Module):
     #     loss, pred = self.loss_function(output, label)
 
     #     return loss, pred    
-    
-    # def us_rendering_forward(self, batch_data_ct):
-    #     input = batch_data_ct[0].to(self.params.device)
-    #     us_sim = self.USRenderingModel(input.squeeze()) 
-    #     return us_sim
-
-
-    def rendering_forward(self, input):
-        us_sim = self.USRenderingModel(input.squeeze()) 
-        us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (SIZE_W, SIZE_H)).float()
-        # self.USRenderingModel.plot_fig(us_sim.squeeze(), "us_sim", True)
-
-        return us_sim_resized          
+ 
     
     def seg_forward(self, us_sim, label):
         output = self.outer_model.forward(us_sim)
-
-        if self.params.warp_img: 
-            label = self.USRenderingModel.warp_img(label)
 
         if self.params.outer_model_monai:
             loss = self.loss_function(output, label)
@@ -172,28 +132,28 @@ class SegmentationSim(torch.nn.Module):
 
 
 
-    def configure_optimizers(self, inner_model, outer_model):
+    # def configure_optimizers(self, model, outer_model):
 
-        if inner_model is None:
-            optimizer = torch.optim.Adam(outer_model.parameters(), self.params.outer_model_learning_rate)
-        else:
-            # params = list(outer_model.parameters()) + list(inner_model.parameters())
-            # optimizer = torch.optim.Adam(params, self.params.learning_rate)
+    #     if inner_model is None:
+    #     optimizer = torch.optim.Adam(model.parameters(), self.params.outer_model_learning_rate)
+    #     else:
+    #         # params = list(outer_model.parameters()) + list(inner_model.parameters())
+    #         # optimizer = torch.optim.Adam(params, self.params.learning_rate)
 
-            optimizer = torch.optim.Adam(
-                [
-                    {"params": outer_model.parameters(), "lr": self.params.outer_model_learning_rate},
-                    {"params": inner_model.parameters(), "lr": self.params.inner_model_learning_rate},
-                ],
-                # lr=self.params.global_learning_rate,
-            )
+    #         optimizer = torch.optim.Adam(
+    #             [
+    #                 {"params": outer_model.parameters(), "lr": self.params.outer_model_learning_rate},
+    #                 {"params": inner_model.parameters(), "lr": self.params.inner_model_learning_rate},
+    #             ],
+    #             # lr=self.params.global_learning_rate,
+    #         )
 
-        if self.params.scheduler: 
-            scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
-        else:
-            scheduler = None
+    #     if self.params.scheduler: 
+    #         scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
+    #     else:
+    #         scheduler = None
 
-        return optimizer, scheduler
+    #     return optimizer, scheduler
 
 
     # def training_step(self, batch_data, batch_idx=None):

@@ -8,7 +8,8 @@ from PIL import Image
 from torchvision import transforms
 import torch.nn.functional as F
 import cv2
-
+from scipy.interpolate import interp2d
+from math import pi, atan2, hypot
 
 # 2 - lung; 3 - fat; 4 - vessel; 6 - kidney; 8 - muscle; 9 - background; 11 - liver; 12 - soft tissue; 13 - bone; 
 # Default Parameters from: https://github.com/Blito/burgercpp/blob/master/examples/ircad11/liver.scene , labels 8, 9 and 12 from the USHybridSim_auto_generate_imgs_masks_param2_3Splines.iws file
@@ -23,7 +24,7 @@ import cv2
 acoustic_imped_def_dict = torch.tensor([0.0004, 1.38, 1.61,  1.62, 1.62, 0.3,  1.65, 1.63, 7.8], requires_grad=True).to(device='cuda')    # Z in MRayl
 attenuation_def_dict =    torch.tensor([1.64,   0.63, 0.18,  1.0,  1.09, 0.54, 0.7,  0.54, 5.0], requires_grad=True).to(device='cuda')    # alpha in dB cm^-1 at 1 MHz
 mu_0_def_dict =           torch.tensor([0.78,   0.5,  0.001, 0.4,  0.4,  0.3,  0.19, 0.64, 0.78], requires_grad=True).to(device='cuda') # mu_0 - scattering_mu   mean brightness
-mu_1_def_dict =           torch.tensor([0.56,   0.5,  0.0,   0.6,  0.6,  0.2,  0.4,  0.64, 0.56], requires_grad=True).to(device='cuda') # mu_1 - scattering density, Nr of scatterers/voxel
+mu_1_def_dict =           torch.tensor([0.56,   0.5,  0.0,   0.6,  0.6,  0.2,  1.0,  0.64, 0.56], requires_grad=True).to(device='cuda') # mu_1 - scattering density, Nr of scatterers/voxel
 sigma_0_def_dict =        torch.tensor([0.1,    0.0,  0.01,  0.3,  0.3,  0.0,  0.24, 0.1,  0.1], requires_grad=True).to(device='cuda') # sigma_0 - scattering_sigma - brightness std
 
 
@@ -55,24 +56,31 @@ g_kernel = torch.tensor(g_kernel[None, None, :, :], dtype=torch.float32).to(devi
 
 
 class UltrasoundRendering(torch.nn.Module):
-    def __init__(self, params):
+    def __init__(self, params, default_param=False):
         super(UltrasoundRendering, self).__init__()
         self.params = params
 
-        # self.save_hyperparameters()
-        self.acoustic_impedance_dict = torch.nn.Parameter(acoustic_imped_def_dict)#.to(device='cuda')
-        self.attenuation_dict = torch.nn.Parameter(attenuation_def_dict)#.to(device='cuda')
-
-        if self.params.cactuss_mode:
-            self.mu_0_dict = torch.zeros(9).to(device='cuda') 
-            self.mu_1_dict = torch.zeros(9).to(device='cuda') 
-            self.sigma_0_dict = torch.zeros(9).to(device='cuda') 
-            TGC = CACTUSS_COEFF 
-
+        if default_param:
+            self.acoustic_impedance_dict = acoustic_imped_def_dict.detach().clone()
+            self.attenuation_dict = attenuation_def_dict.detach().clone()
+            self.mu_0_dict = mu_0_def_dict.detach().clone()
+            self.mu_1_dict = mu_1_def_dict.detach().clone()
+            self.sigma_0_dict = sigma_0_def_dict.detach().clone() 
+        
         else:
-            self.mu_0_dict = torch.nn.Parameter(mu_0_def_dict)
-            self.mu_1_dict = torch.nn.Parameter(mu_1_def_dict)
-            self.sigma_0_dict = torch.nn.Parameter(sigma_0_def_dict)
+            self.acoustic_impedance_dict = torch.nn.Parameter(acoustic_imped_def_dict)
+            self.attenuation_dict = torch.nn.Parameter(attenuation_def_dict)
+
+            if self.params.cactuss_mode:
+                self.mu_0_dict = torch.zeros(9).to(device='cuda') 
+                self.mu_1_dict = torch.zeros(9).to(device='cuda') 
+                self.sigma_0_dict = torch.zeros(9).to(device='cuda') 
+                TGC = CACTUSS_COEFF 
+
+            else:
+                self.mu_0_dict = torch.nn.Parameter(mu_0_def_dict)
+                self.mu_1_dict = torch.nn.Parameter(mu_1_def_dict)
+                self.sigma_0_dict = torch.nn.Parameter(sigma_0_def_dict)
 
         self.labels = ["lung", "fat", "vessel", "kidney", "muscle", "background", "liver", "soft tissue", "bone"]
 
@@ -272,32 +280,44 @@ class UltrasoundRendering(torch.nn.Module):
 
         return z_vals 
 
-    def warp_img(self, im_src):
-        im_src = np.swapaxes(im_src, 0, 1)
-        print(im_src.shape)
-        pts_src = np.array([[0, 0],
-                            [im_src.shape[1], 0],
-                            [0, im_src.shape[0]],
-                            [im_src.shape[1], im_src.shape[0]]])
-        
-        # Read destination image.
-        im_dst = np.array(im_src)
-        im_dst[:] = 0
-        # Four corners of the book in destination image.
-        pts_dst = np.array([[im_src.shape[1]/2 - 60, 0],
-                            [im_src.shape[1]/2 + 60, 0],
-                            [0, im_src.shape[0]],
-                            [im_src.shape[1], im_src.shape[0]]])
+    def warp_img(self, inputImage):
 
-        # Calculate Homography
-        h, status = cv2.findHomography(pts_src, pts_dst)
+        resultWidth = 400
+        resultHeight = 220
+        centerX = resultWidth / 2
+        centerY = -100.0
+        maxAngle =  60.0 / 2 / 180 * pi #rad
+        minAngle = -maxAngle
+        minRadius = 120.0
+        maxRadius = 340.0
 
-        # Warp source image to destination based on homography
-        im_warped = cv2.warpPerspective(im_src, h, (im_dst.shape[1], im_dst.shape[0]))
+        # inputImage = np.swapaxes(cv2.imread(inputImagePath, cv2.IMREAD_GRAYSCALE),1,0)
+        print(inputImage.shape)
+        h, w = inputImage.shape
+        inputImage = np.expand_dims(inputImage, axis=0)
+        inputImage = torch.from_numpy(inputImage).float().unsqueeze(0)
 
-        self.plot_fig(im_src, "im_src", True)
-        self.plot_fig(im_dst, "im_dst", True)
-        self.plot_fig(im_warped, "warped_img", True)
+        interpolated = interp2d(range(w), range(h), inputImage[0][0])
+
+        resultImage = torch.zeros([1, resultHeight, resultWidth], dtype=torch.uint8)
+
+        for c in range(resultWidth):
+            for r in range(resultHeight):
+                dx = c - centerX
+                dy = r - centerY
+                angle = atan2(dx, dy)  # yes, dx, dy in this case!
+                if angle < maxAngle and angle > minAngle:
+                    origCol = (angle - minAngle) / (maxAngle - minAngle) * w
+                    radius = hypot(dx, dy)
+                    if radius > minRadius and radius < maxRadius:
+                        origRow = (radius - minRadius) / (maxRadius - minRadius) * h
+                        resultImage[0, r, c] = torch.tensor(interpolated(origCol, origRow))
+
+        resultImage_resized = F.resize(resultImage.unsqueeze(0), (256, 256)).float()
+        self.plot_fig(self.resultImage_resized, "resultImage_resized", True)
+
+        return resultImage_resized
+
 
 
     def normalize(self, img):
@@ -400,6 +420,10 @@ class UltrasoundRendering(torch.nn.Module):
         self.intensity_map_masked = self.intensity_map  * torch.transpose(us_mask, 0, 1) #np.transpose(us_mask)
         self.intensity_map_masked = torch.rot90(self.intensity_map_masked, 3, [0, 1])
 
-        if self.params.debug:  self.plot_fig(self.intensity_map_masked, "intensity_map_masked", True)
+        if self.params.warp_img: 
+            self.intensity_map_rot = torch.rot90(self.intensity_map, 3, [0, 1])
+            resultImage_resized = self.warp_img(self, self.intensity_map_rot)
+        
+        # if self.params.debug:  self.plot_fig(self.intensity_map_masked, "intensity_map_masked", True)
         return self.intensity_map_masked
 

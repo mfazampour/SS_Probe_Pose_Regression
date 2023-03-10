@@ -31,28 +31,22 @@ from scipy.stats import wasserstein_distance
 from full_run_torch import training_loop_seg_net
 from monai.metrics import HausdorffDistanceMetric
 from models.us_rendering_model_torch import UltrasoundRendering
+from torch.utils.data import Dataset, DataLoader
+
 
 MANUAL_SEED = False
-NR_IMGS_TO_PLOT = 16
+NR_IMGS_TO_PLOT = 4
 
-# torch.use_deterministic_algorithms(True, warn_only=True)
-# tb_logger = SummaryWriter('log_dir/cactuss_end2end')
 
-# Define the desired transforms
-# transform_real_us_data = transforms.Compose([
-#     transforms.ToTensor(),
-#     transforms.Normalize((0.5,), (0.5,))
-# ])
 
 class CUTTrainer():
-    def __init__(self, opt_cut, cut_model, inner_model, dataset_real_us, real_us_train_loader):
+    def __init__(self, opt_cut, cut_model, dataset_real_us, real_us_train_loader):
         super(CUTTrainer, self).__init__()
         self.opt_cut = opt_cut
         self.t_data = 0 
         self.total_iter = 0 
         self.optimize_time = 0.1
         self.cut_model = cut_model
-        self.inner_model = inner_model
         self.dataset_real_us = dataset_real_us
         self.random_state = None
         self.real_us_train_loader = real_us_train_loader
@@ -304,6 +298,9 @@ if __name__ == "__main__":
         hparams.data_dir_real_us_stopp_crit = get_data_paths()['data1'] + hparams.polyaxon_data_dir_real_us_stopp_crit
         print('Real US GT DATASET FOR STOPP CRIT Folder: ', hparams.data_dir_real_us_stopp_crit)
 
+        hparams.cactuss_data_dir = get_data_paths()['data1'] + hparams.polyaxon_cactuss_data_dir
+        print('CACTUSS IMGS: ', hparams.cactuss_data_dir)
+
         hparams.output_path = get_outputs_path()
         poly_experiment_info = Experiment.get_experiment_info()
         poly_experiment_nr = poly_experiment_info['experiment_name'].split(".")[-1]
@@ -341,32 +338,45 @@ if __name__ == "__main__":
     cut_model = cut_create_model(opt_cut)      # create a model given opt.model and other options
 
     ModuleClass = load_module(hparams.module)
-    InnerModelClass = load_model(hparams.inner_model)
+    # InnerModelClass = load_model(hparams.inner_model)
     # OuterModelClass = hparams.outer_model
-    inner_model = InnerModelClass(params=hparams)
+    # inner_model = InnerModelClass(params=hparams)
 
     # InnerModelClass2 = load_model(hparams.inner_model)
-    USRendereDefParams = UltrasoundRendering(params=hparams, default_param=True).to(hparams.device)
+    # USRendereDefParams = UltrasoundRendering(params=hparams, default_param=True).to(hparams.device)
 
 
-
-    if not hparams.outer_model_monai: 
-        OuterModelClass = load_model(hparams.outer_model)
-        outer_model = OuterModelClass(hparams=hparams)
-        module = ModuleClass(params=hparams, inner_model=inner_model, outer_model=outer_model)
-    else:
-        module = ModuleClass(params=hparams, inner_model=inner_model)
+    # if not hparams.outer_model_monai: 
+    OuterModelClass = load_model(hparams.outer_model)
+    outer_model = OuterModelClass(hparams=hparams)
+    module = ModuleClass(params=hparams, model=outer_model)
+    # else:
+        # module = ModuleClass(params=hparams)
 
     # wandb.watch(inner_model, log='all', log_graph=True, log_freq=10)
-    if hparams.logging: wandb.watch([inner_model, module.outer_model], log='all', log_graph=True, log_freq=100)
+    if hparams.logging: wandb.watch([module.outer_model], log='all', log_graph=True, log_freq=100)
 
     # ---------------------
     # LOAD DATA 
     # ---------------------
-    CTDatasetLoader = load_dataset(hparams.dataloader_ct_labelmaps)
-    dataloader = CTDatasetLoader(hparams)
-    train_loader_ct_labelmaps, train_dataset_ct_labelmaps, val_dataset_ct_labelmaps  = dataloader.train_dataloader()
-    val_loader_ct_labelmaps = dataloader.val_dataloader()
+    # CTDatasetLoader = load_dataset(hparams.dataloader_ct_labelmaps)
+    # dataloader = CTDatasetLoader(hparams)
+    # train_loader_ct_labelmaps, train_dataset_ct_labelmaps, val_dataset_ct_labelmaps  = dataloader.train_dataloader()
+    # val_loader_ct_labelmaps = dataloader.val_dataloader()
+
+
+    CactussDatasetClass = load_dataset(hparams.cactuss_dataset)
+    # dataset_real_us = CactussDatasetClass.dataset   
+    aorta_dataset = CactussDatasetClass(hparams, "train")
+
+    dataset_size = len(aorta_dataset)    # get the number of images in the dataset.
+    train_size = int(0.8 * len(aorta_dataset))
+    val_size = len(aorta_dataset) - train_size
+    aorta_train_dataset, val_dataset_real_us = random_split(aorta_dataset, [train_size, val_size])#, generator=Generator().manual_seed(0))
+    aorta_train_dataloader = DataLoader(aorta_train_dataset, batch_size=1, shuffle=True)
+    aorta_val_dataloader =  DataLoader(val_dataset_real_us, batch_size=1, shuffle=False)
+
+    # aorta_val_dataset = CactussDatasetClass(hparams, "val")
 
     real_us_dataset = cut_create_dataset(opt_cut)  # create a dataset given opt.dataset_mode and other options
     RealUSGTDatasetClass = load_dataset(hparams.dataloader_real_us_test)
@@ -385,7 +395,7 @@ if __name__ == "__main__":
     real_us_stopp_crit_dataloader = torch.utils.data.DataLoader(real_us_stopp_crit_dataset, shuffle=False)
 
 
-    cut_trainer = CUTTrainer(opt_cut, cut_model, inner_model, dataset_real_us, real_us_train_loader)
+    cut_trainer = CUTTrainer(opt_cut, cut_model, dataset_real_us, real_us_train_loader)
     early_stopping = EarlyStopping(patience=hparams.early_stopping_patience, 
                                     ckpt_save_path_model1 = f'{hparams.output_path}/best_checkpoint_seg_renderer_test_loss_{hparams.exp_name}', 
                                     ckpt_save_path_model2 = f'{hparams.output_path}/best_checkpoint_CUT_test_loss_{hparams.exp_name}', 
@@ -406,7 +416,6 @@ if __name__ == "__main__":
     # ---------------------
     only_CUT = True
     only_SEGNET = True
-    cut_trainer.cut_model.set_requires_grad(USRendereDefParams, False)
     for epoch in trange(1, hparams.max_epochs + 1):
 
         epoch_iter = 0 
@@ -417,23 +426,22 @@ if __name__ == "__main__":
         step = 0
         module.train()
         module.outer_model.train()
-        inner_model.train()
 
         # ------------------------------------------------------------------------------------------------------------------------------
         #                                         Train SEG NET only
         # ------------------------------------------------------------------------------------------------------------------------------
         if epoch <= hparams.epochs_only_seg_net and hparams.epochs_only_seg_net > 0:
-            # print(f"--------------- INIT SEG NET ------------", cut_trainer.total_iter)
-            training_loop_seg_net(hparams, module, inner_model, hparams.batch_size_manual, train_loader_ct_labelmaps, train_losses, plotter)
+            print(f"--------------- INIT SEG NET ------------", cut_trainer.total_iter)
+            # training_loop_seg_net(hparams, module, inner_model, hparams.batch_size_manual, train_loader_ct_labelmaps, train_losses, plotter)
 
         # opt_cut.isTrain = True
         # ------------------------------------------------------------------------------------------------------------------------------
         #                                         Train CUT only
         # ------------------------------------------------------------------------------------------------------------------------------
         if epoch <= hparams.epochs_only_cut and hparams.epochs_only_cut > 0:
-            for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps), ncols= 100, position=0, leave=True):
-                # print(f"--------------- INIT CUT ------------", cut_trainer.total_iter)
-                cut_trainer.train_cut(batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
+            # for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps), ncols= 100, position=0, leave=True):
+            print(f"--------------- INIT CUT ------------", cut_trainer.total_iter)
+            #     cut_trainer.train_cut(batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
     
         # ------------------------------------------------------------------------------------------------------------------------------
         #                                         Train US Renderer + SEG NET + CUT
@@ -445,123 +453,35 @@ if __name__ == "__main__":
 
             batch_loss_list = []
             if hparams.batch_size_manual == 1:      # if batch==1
-                for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps), ncols= 100):   #, position=0, leave=True):
+                for i, batch_data_us_sim in tqdm(enumerate(aorta_train_dataloader), total=len(aorta_train_dataloader) // 10, ncols= 100):   #, position=0, leave=True):
                     step += 1
                     module.optimizer.zero_grad()
-                    input, label, filename = module.get_data(batch_data_ct)
 
-                    if 1 in label:  #ONLY AORTA ONES
-                        if hparams.use_idtB:
-                            us_sim = module.rendering_forward(input)
-                            us_sim_cut = us_sim.clone().detach()
-                            cut_trainer.train_cut(module, us_sim_cut, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
-
-                            # label = cut_trainer.forward_cut_B(us_sim, label)
-                            cut_trainer.forward_cut_B(us_sim)
-                            idt_B = cut_trainer.cut_model.idt_B
-                            # idt_B = idt_B.clone()
-                            idt_B = (idt_B / 2 ) + 0.5 # from [-1,1] to [0,1]
-                            
-                            if hparams.seg_net_input_augmentations_noise_blur or hparams.seg_net_input_augmentations_rand_crop:
-                                idt_B, label = add_online_augmentations(hparams, idt_B, label)
-
-                            loss, prediction = module.seg_forward(idt_B, label)
-
-                            if hparams.inner_model_learning_rate == 0: 
-                                cut_trainer.cut_model.set_requires_grad(module.USRenderingModel, False)
-                            loss.backward()
-                            # Perform gradient clipping
-                            if hparams.grad_clipping:
-                                torch.nn.utils.clip_grad_norm_(module.USRenderingModel.parameters(), max_norm=1)
-                                torch.nn.utils.clip_grad_norm_(module.outer_model.parameters(), max_norm=1)
-
-                            module.optimizer.step()
-                           
-
-                        else:
-                            us_sim = module.rendering_forward(input)
-                            if hparams.seg_net_input_augmentations_noise_blur or hparams.seg_net_input_augmentations_rand_crop:
-                                us_sim, label = add_online_augmentations(hparams, us_sim, label)
-                            loss, prediction = module.seg_forward(us_sim, label)
-                            # check_gradients(module)
-                            # with torch.autograd.detect_anomaly():
-                            # log_model_gradients(inner_model, step)
-
-                            if hparams.inner_model_learning_rate == 0: 
-                                cut_trainer.cut_model.set_requires_grad(module.USRenderingModel, False)
-                            loss.backward()
-                            module.optimizer.step()
-                            us_sim_cut = us_sim.clone().detach()
-
-                            # cut_trainer.train_cut(module, us_sim_cut, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
-
-
-                        # print(f"{step}/{len(train_loader_ct_labelmaps.dataset) // train_loader_ct_labelmaps.batch_size}, train_loss: {loss.item():.4f}")
-                        if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
-                        train_losses.append(loss.item())
-                        if hparams.logging: plotter.log_us_rendering_values(module.USRenderingModel, step)
-                    
-
-            else:       # if batch>1
-                dataloader_iterator = iter(train_loader_ct_labelmaps)
-                while step < len(train_loader_ct_labelmaps):
-                    step += 1
-                    module.optimizer.zero_grad()
-                    # while step % hparams.batch_size_manual != 0 :
-                    while step % hparams.batch_size_manual != 0:
-                        data = next(dataloader_iterator)
-
-                        input, label = module.get_data(data)
-                        loss, us_sim, prediction = module.step(input, label)
-                        batch_loss_list.append(loss)
-                        step += 1
-                        if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
-                        train_losses.append(loss.item())
-                    
-                    loss = torch.mean(torch.stack(batch_loss_list))
-
-                    # check_gradients(module)
+                    us_sim_img, us_sim_label, filename = batch_data_us_sim[0].to(hparams.device), batch_data_us_sim[1].to(hparams.device).float(), batch_data_us_sim[2]
+                    loss, prediction = module.seg_forward(us_sim_img, us_sim_label)
                     loss.backward()
                     module.optimizer.step()
-                    batch_loss_list =[]
-
-                    print(f"{step}/{len(train_loader_ct_labelmaps.dataset) // train_loader_ct_labelmaps.batch_size}, train_loss: {loss.item():.4f}")
-                    if hparams.logging: plotter.log_us_rendering_values(inner_model, step)
-
-                    cut_trainer.train_cut(data, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
+                    
+                    cut_trainer.train_cut(module, us_sim_img, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
 
 
-            if hparams.scheduler: 
-                module.scheduler.step()
-                wandb.log({"lr_": module.optimizer.param_groups[0]["lr"]})
-                wandb.log({"lr_2": module.optimizer.param_groups[1]["lr"]})
-
-        # ------------------------------------------------------------------------------------------------------------------------------
+                # print(f"{step}/{len(train_loader_ct_labelmaps.dataset) // train_loader_ct_labelmaps.batch_size}, train_loss: {loss.item():.4f}")
+                if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
+                train_losses.append(loss.item())            
+        # -----------------------------------------------------------------------------------------------------------------------------
         #                                         Plot CUT results during training
         # ------------------------------------------------------------------------------------------------------------------------------
             if len(cut_trainer.cut_plot_figs) > 0: 
                 plotter.log_image(torchvision.utils.make_grid(cut_trainer.cut_plot_figs), "real_A|fake_B|real_B|idt_B")
                 cut_trainer.cut_plot_figs = []
 
-                # acoustic_impedance_dict_before_cut = inner_model.acoustic_impedance_dict
-                # plotter.log_us_rendering_values(inner_model, step)
-                # cut_trainer.train_cut(batch_data_ct, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
-                # if not torch.equal(acoustic_impedance_dict_before_cut, inner_model.acoustic_impedance_dict):
-                #     print(f"--------------- US PARAMS CHANGED --------------")
-
-        
-        print(f"--------------- ONLY CUT: {only_CUT} -------------- epoch: ", epoch)
-        print(f"--------------- ONLY SEGNET: {only_SEGNET} -------------- epoch: ", epoch)
         
         # ------------------------------------------------------------------------------------------------------------------------------
         #                             SEG NET VALIDATION on every hparams.validate_every_n_steps
         # ------------------------------------------------------------------------------------------------------------------------------
         if epoch % hparams.validate_every_n_steps == 0 and epoch > hparams.epochs_only_cut:
             module.eval()
-            module.outer_model.eval()
-            inner_model.eval()
             cut_model.eval()
-            USRendereDefParams.eval()
             val_step = 0
             print(f"--------------- VALIDATION SEG NET ------------")
             stopp_crit_plot_figs = []
@@ -571,124 +491,92 @@ if __name__ == "__main__":
             wasserstein_distance_bw_rendered_reconstr = []
             wasserstein_distance_bw_rendered_idt_reconstr = []
             with torch.no_grad():
-                for nr, val_batch_data_ct in tqdm(enumerate(val_loader_ct_labelmaps), total=len(val_loader_ct_labelmaps), ncols= 100):
+                for nr, batch_data_us_sim_val in tqdm(enumerate(aorta_val_dataloader), total=len(aorta_val_dataloader) // 10, ncols= 100):
                     
                     val_step += 1
 
-                    val_input, val_label, filename = module.get_data(val_batch_data_ct)  
+                    us_sim_img_val, us_sim_val_label, filename = batch_data_us_sim_val[0].to(hparams.device), batch_data_us_sim_val[1].to(hparams.device).float(), batch_data_us_sim_val[2]
+                    val_loss_step, rendered_seg_pred = module.seg_forward(us_sim_img_val, us_sim_val_label)
 
-                    if 1 in val_label:
-                        val_input_copy =  val_input.clone().detach()            
-                        if hparams.use_idtB:
-                            us_sim = module.rendering_forward(val_input)
-                            
-                            cut_trainer.forward_cut_B(us_sim)
+                    # dict = module.plot_val_results(us_sim_img_val, val_loss_step, filename, us_sim_val_label, rendered_seg_pred, us_sim_img_val, epoch)
+                    # plotter.validation_batch_end(dict)
 
-                            idt_B_val = cut_trainer.cut_model.idt_B
-                            # idt_B = idt_B.clone()
-                            idt_B_val = (idt_B_val / 2 ) + 0.5 # from [-1,1] to [0,1]
+                    valid_losses.append(val_loss_step.item())
 
-                            # if hparams.debug and (hparams.seg_net_input_augmentations_noise_blur or hparams.seg_net_input_augmentations_rand_crop):
-                            #     idt_B_val, val_label = add_online_augmentations(hparams, idt_B_val, val_label)
-
-                            val_loss_step, rendered_seg_pred = module.seg_forward(idt_B_val, val_label)
-                            if not hparams.log_default_renderer: dict = module.plot_val_results(val_input, val_loss_step, filename, val_label, rendered_seg_pred, idt_B_val, epoch)
-                        
-                        else:
-                            us_sim = module.rendering_forward(val_input)
-                            
-                            if hparams.debug and (hparams.seg_net_input_augmentations_noise_blur or hparams.seg_net_input_augmentations_rand_crop):
-                                us_sim, val_label = add_online_augmentations(hparams, us_sim, val_label)
-
-                            val_loss_step, rendered_seg_pred = module.seg_forward(us_sim, val_label)
-                            if not hparams.log_default_renderer: dict = module.plot_val_results(val_input, val_loss_step, filename, val_label, rendered_seg_pred, us_sim, epoch)
-
-                        # rendered_seg_pred, us_sim, val_loss_step, dict = module.validation_step(val_batch_data_ct, epoch)
-                        # print(f"{val_step}/{len(val_dataset_ct_labelmaps) // val_loader_ct_labelmaps.batch_size}, seg_val_loss: {val_loss.item():.4f}")
-                        # if hparams.logging: wandb.log({"seg_val_loss_step": val_loss_step.item(), "step": val_step})
-
-                        valid_losses.append(val_loss_step.item())
-
-                        # USRendereDefParams.plot_fig(val_label, "val_label", True)
-
-
-                        if hparams.log_default_renderer and nr < NR_IMGS_TO_PLOT:
-                            us_sim_def = USRendereDefParams(val_input_copy.squeeze()) 
-
-                            plot_fig = plotter.plot_stopp_crit(caption="default_renderer|labelmap|defaultUS|learnedUS|seg_input|seg_pred|gt",
-                                                        imgs=[val_input, us_sim_def, us_sim, idt_B_val, rendered_seg_pred, val_label], 
-                                                        img_text='', epoch=epoch, plot_single=False) #mean_diff=' + "{:.4f}".format(seg_pred_mean_diff.item()), )
-                            def_renderer_plot_figs.append(plot_fig)
-                        else:
-                            plotter.validation_batch_end(dict)
+                    if nr < NR_IMGS_TO_PLOT:
+                        plot_fig = plotter.plot_stopp_crit(caption="default_renderer|us_sim_img_val|rendered_seg_pred|us_sim_val_label",
+                                                    imgs=[us_sim_img_val, rendered_seg_pred, us_sim_val_label], 
+                                                    img_text='', epoch=epoch, plot_single=False)
+                        def_renderer_plot_figs.append(plot_fig)
+                    # else:
+                    #     plotter.validation_batch_end(dict)
 
                 
 
-
-        # ------------------------------------------------------------------------------------------------------------------------------
-        #                             STOPPING CRITERIA CHECK - infer imgs from CUT train_set through the SEG NET
-        # ------------------------------------------------------------------------------------------------------------------------------
-                    if epoch > hparams.epochs_check_stopp_crit and hparams.plot_avg_seg_px_dff and hparams.pred_label in val_batch_data_ct[0]:
-                        print(f"--------------- INFER UNLABELLED REAL US IMGS FROM CUT TRAIN SET THROUGH THE SEG NET ------------")
-                        # cut_model.eval()
-                        try:
-                            data_cut_real_us = next(dataloader_real_us_iterator)
-                        except StopIteration:
-                            dataloader_real_us_iterator = iter(real_us_train_loader)
-                            data_cut_real_us = next(dataloader_real_us_iterator)
+        # # ------------------------------------------------------------------------------------------------------------------------------
+        # #                             STOPPING CRITERIA CHECK - infer imgs from CUT train_set through the SEG NET
+        # # ------------------------------------------------------------------------------------------------------------------------------
+        #             if epoch > hparams.epochs_check_stopp_crit and hparams.plot_avg_seg_px_dff and hparams.pred_label in val_batch_data_ct[0]:
+        #                 print(f"--------------- INFER UNLABELLED REAL US IMGS FROM CUT TRAIN SET THROUGH THE SEG NET ------------")
+        #                 # cut_model.eval()
+        #                 try:
+        #                     data_cut_real_us = next(dataloader_real_us_iterator)
+        #                 except StopIteration:
+        #                     dataloader_real_us_iterator = iter(real_us_train_loader)
+        #                     data_cut_real_us = next(dataloader_real_us_iterator)
                         
-                        data_cut_real_us_domain_real = data_cut_real_us['A'].to(hparams.device)
+        #                 data_cut_real_us_domain_real = data_cut_real_us['A'].to(hparams.device)
 
-                        cut_trainer.forward_cut_A(data_cut_real_us_domain_real)
-                        reconstructed_us = cut_trainer.cut_model.fake_B 
+        #                 cut_trainer.forward_cut_A(data_cut_real_us_domain_real)
+        #                 reconstructed_us = cut_trainer.cut_model.fake_B 
 
-                        # reconstructed_us = cut_model.netG(data_cut_real_us_domain_real)
+        #                 # reconstructed_us = cut_model.netG(data_cut_real_us_domain_real)
 
-                        reconstructed_us = (reconstructed_us / 2 ) + 0.5 # from [-1,1] to [0,1]
-                        _, reconstructed_seg_pred  = module.seg_forward(reconstructed_us, reconstructed_us)
+        #                 reconstructed_us = (reconstructed_us / 2 ) + 0.5 # from [-1,1] to [0,1]
+        #                 _, reconstructed_seg_pred  = module.seg_forward(reconstructed_us, reconstructed_us)
 
-                        #calc the diff bw avg number of white pixels bw the seg predictions of rendered and recoconstructed 
-                        # seg_pred_mean_diff = torch.abs(torch.mean(reconstructed_seg_pred) - torch.mean(rendered_seg_pred))
-                        # avg_seg_pred_mean_diff.append(seg_pred_mean_diff.item())
+        #                 #calc the diff bw avg number of white pixels bw the seg predictions of rendered and recoconstructed 
+        #                 # seg_pred_mean_diff = torch.abs(torch.mean(reconstructed_seg_pred) - torch.mean(rendered_seg_pred))
+        #                 # avg_seg_pred_mean_diff.append(seg_pred_mean_diff.item())
 
-                        reconstructed_seg_pred_nr_white_pxs.append(torch.sum(reconstructed_seg_pred))
-                        rendered_seg_pred_nr_white_pxs.append(torch.sum(rendered_seg_pred))
-                        wasserstein_distance_bw_rendered_reconstr.append(wasserstein_distance(us_sim.cpu().flatten(), reconstructed_us.cpu().flatten()))
-                        if hparams.use_idtB: wasserstein_distance_bw_rendered_idt_reconstr.append(wasserstein_distance(idt_B_val.cpu().flatten(), reconstructed_us.cpu().flatten()))
+        #                 reconstructed_seg_pred_nr_white_pxs.append(torch.sum(reconstructed_seg_pred))
+        #                 rendered_seg_pred_nr_white_pxs.append(torch.sum(rendered_seg_pred))
+        #                 wasserstein_distance_bw_rendered_reconstr.append(wasserstein_distance(us_sim.cpu().flatten(), reconstructed_us.cpu().flatten()))
+        #                 if hparams.use_idtB: wasserstein_distance_bw_rendered_idt_reconstr.append(wasserstein_distance(idt_B_val.cpu().flatten(), reconstructed_us.cpu().flatten()))
 
-                        if hparams.logging and nr < NR_IMGS_TO_PLOT:
-                            # wandb.log({"seg_pred_mean_diff": seg_pred_mean_diff.item()})
-                            no_random_transform = cut_trainer.inference_transformatons()
-                            data_cut_real_us_domain_real = no_random_transform(data_cut_real_us_domain_real)
-                            data_cut_real_us_domain_real = (data_cut_real_us_domain_real / 2 ) + 0.5 # from [-1,1] to [0,1]
-                            plot_fig = plotter.plot_stopp_crit(caption="infer_CUT_during_val_|real_us|reconstructed_us|seg_pred_real|seg_pred_rendered|us_rendered",
-                                                    imgs=[data_cut_real_us_domain_real, reconstructed_us, reconstructed_seg_pred, rendered_seg_pred, us_sim], 
-                                                    img_text='', epoch=epoch, plot_single=False) #mean_diff=' + "{:.4f}".format(seg_pred_mean_diff.item()), )
-                            stopp_crit_plot_figs.append(plot_fig)
+        #                 if hparams.logging and nr < NR_IMGS_TO_PLOT:
+        #                     # wandb.log({"seg_pred_mean_diff": seg_pred_mean_diff.item()})
+        #                     no_random_transform = cut_trainer.inference_transformatons()
+        #                     data_cut_real_us_domain_real = no_random_transform(data_cut_real_us_domain_real)
+        #                     data_cut_real_us_domain_real = (data_cut_real_us_domain_real / 2 ) + 0.5 # from [-1,1] to [0,1]
+        #                     plot_fig = plotter.plot_stopp_crit(caption="infer_CUT_during_val_|real_us|reconstructed_us|seg_pred_real|seg_pred_rendered|us_rendered",
+        #                                             imgs=[data_cut_real_us_domain_real, reconstructed_us, reconstructed_seg_pred, rendered_seg_pred, us_sim], 
+        #                                             img_text='', epoch=epoch, plot_single=False) #mean_diff=' + "{:.4f}".format(seg_pred_mean_diff.item()), )
+        #                     stopp_crit_plot_figs.append(plot_fig)
                 
-                if len(stopp_crit_plot_figs) > 0: 
-                    if hparams.logging:
-                        plotter.log_image(torchvision.utils.make_grid(stopp_crit_plot_figs), "infer_CUT_during_val_|real_us|reconstructed_us|seg_pred_real|seg_pred_rendered|us_rendered")
-                        # avg_seg_pred_mean_diff_mean = torch.mean(seg_pred_mean_diff)
-                        # wandb.log({"seg_pred_mean_diff_epoch": avg_seg_pred_mean_diff_mean, "epoch": epoch})
-                        # seg_pred_mean_diff = []
-                        wandb.log({"reconstructed_seg_pred_nr_white_pxs_mean_epoch": torch.mean(torch.stack(reconstructed_seg_pred_nr_white_pxs)), "epoch": epoch})
-                        wandb.log({"reconstructed_seg_pred_nr_white_pxs_std_epoch": torch.std(torch.stack(reconstructed_seg_pred_nr_white_pxs)), "epoch": epoch})
+                # if len(stopp_crit_plot_figs) > 0: 
+                #     if hparams.logging:
+                #         plotter.log_image(torchvision.utils.make_grid(stopp_crit_plot_figs), "infer_CUT_during_val_|real_us|reconstructed_us|seg_pred_real|seg_pred_rendered|us_rendered")
+                #         # avg_seg_pred_mean_diff_mean = torch.mean(seg_pred_mean_diff)
+                #         # wandb.log({"seg_pred_mean_diff_epoch": avg_seg_pred_mean_diff_mean, "epoch": epoch})
+                #         # seg_pred_mean_diff = []
+                #         wandb.log({"reconstructed_seg_pred_nr_white_pxs_mean_epoch": torch.mean(torch.stack(reconstructed_seg_pred_nr_white_pxs)), "epoch": epoch})
+                #         wandb.log({"reconstructed_seg_pred_nr_white_pxs_std_epoch": torch.std(torch.stack(reconstructed_seg_pred_nr_white_pxs)), "epoch": epoch})
 
-                        wandb.log({"rendered_seg_pred_nr_white_pxs_mean_epoch": torch.mean(torch.stack(rendered_seg_pred_nr_white_pxs)), "epoch": epoch})
-                        wandb.log({"rendered_seg_pred_nr_white_pxs_std_epoch": torch.std(torch.stack(rendered_seg_pred_nr_white_pxs)), "epoch": epoch})
+                #         wandb.log({"rendered_seg_pred_nr_white_pxs_mean_epoch": torch.mean(torch.stack(rendered_seg_pred_nr_white_pxs)), "epoch": epoch})
+                #         wandb.log({"rendered_seg_pred_nr_white_pxs_std_epoch": torch.std(torch.stack(rendered_seg_pred_nr_white_pxs)), "epoch": epoch})
 
-                        wandb.log({"kl_divergence_bw_nr_pxs_epoch": kl_div(torch.stack(reconstructed_seg_pred_nr_white_pxs), torch.stack(rendered_seg_pred_nr_white_pxs)), "epoch": epoch})
-                        wandb.log({"wasserstein_distance_bw_nr_pxs_epoch": wasserstein_distance(torch.stack(reconstructed_seg_pred_nr_white_pxs).cpu(), torch.stack(rendered_seg_pred_nr_white_pxs).cpu()), "epoch": epoch})
+                #         wandb.log({"kl_divergence_bw_nr_pxs_epoch": kl_div(torch.stack(reconstructed_seg_pred_nr_white_pxs), torch.stack(rendered_seg_pred_nr_white_pxs)), "epoch": epoch})
+                #         wandb.log({"wasserstein_distance_bw_nr_pxs_epoch": wasserstein_distance(torch.stack(reconstructed_seg_pred_nr_white_pxs).cpu(), torch.stack(rendered_seg_pred_nr_white_pxs).cpu()), "epoch": epoch})
 
-                        wandb.log({"mean_wasserstein_distance_bw_rendered&reconstr_epoch": np.mean(wasserstein_distance_bw_rendered_reconstr), "epoch": epoch})
-                        if hparams.use_idtB: wandb.log({"mean_wasserstein_distance_bw_rendered_idt&reconstr_epoch":  np.mean(wasserstein_distance_bw_rendered_idt_reconstr), "epoch": epoch})
+                #         wandb.log({"mean_wasserstein_distance_bw_rendered&reconstr_epoch": np.mean(wasserstein_distance_bw_rendered_reconstr), "epoch": epoch})
+                #         if hparams.use_idtB: wandb.log({"mean_wasserstein_distance_bw_rendered_idt&reconstr_epoch":  np.mean(wasserstein_distance_bw_rendered_idt_reconstr), "epoch": epoch})
 
-                    stopp_crit_plot_figs = [] 
-                    reconstructed_seg_pred_nr_white_pxs = []
-                    rendered_seg_pred_nr_white_pxs = []
-                    wasserstein_distance_bw_rendered_reconstr = []
-                    wasserstein_distance_bw_rendered_idt_reconstr = []
+                #     stopp_crit_plot_figs = [] 
+                #     reconstructed_seg_pred_nr_white_pxs = []
+                #     rendered_seg_pred_nr_white_pxs = []
+                #     wasserstein_distance_bw_rendered_reconstr = []
+                #     wasserstein_distance_bw_rendered_idt_reconstr = []
 
                 if len(def_renderer_plot_figs) > 0: 
                     if hparams.logging:
@@ -708,9 +596,9 @@ if __name__ == "__main__":
 
             if hparams.logging: wandb.log({"seg_train_loss_epoch": train_loss, "epoch": epoch})
             if hparams.logging: wandb.log({"seg_val_loss_epoch": valid_loss, "epoch": epoch})
-            if hparams.logging and not hparams.log_default_renderer: plotter.validation_epoch_end()
+            # plotter.validation_epoch_end()
 
-            if(epoch > 20): # hparams.min_epochs):
+            if(epoch > 1): # hparams.min_epochs):
                 early_stopping_best_val(valid_loss, epoch, module, cut_model.netG)
                 
             # if early_stopping.early_stop and hparams.min_epochs:
@@ -772,7 +660,7 @@ if __name__ == "__main__":
 
                 # early_stopping needs the validation loss to check if it has decresed, 
                 # and if it has, it will make a checkpoint of the current model
-                if(epoch > 20): # hparams.min_epochs):
+                if(epoch > 1): # hparams.min_epochs):
                     early_stopping(avg_stopp_crit_loss, epoch, module, cut_model.netG)
                 
                 if early_stopping.early_stop and hparams.min_epochs:
@@ -799,12 +687,6 @@ if __name__ == "__main__":
                         # real_us_test_img_label = transforms.functional.hflip(real_us_test_img_label)
 
                         reconstructed_us_testset = (reconstructed_us_testset / 2 ) + 0.5 # from [-1,1] to [0,1]
-
-                        # self.fake_B = reconstructed_us_testset[:self.real_A.size(0)] #???
-                        # cut_model.forward()
-                        # cut_model.compute_visuals()
-                        # visuals = cut_model.get_current_visuals()  # get image results   for label, image in visuals.items():
-                        # output_cut = visuals['fake_B']
 
                         testset_loss, seg_pred  = module.seg_forward(reconstructed_us_testset, real_us_test_img_label)
                         # print(f"stop_criterion_loss: {testset_loss.item():.4f}")

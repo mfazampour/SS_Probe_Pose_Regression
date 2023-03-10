@@ -32,33 +32,36 @@ class CT3DLabelmapDataset(Dataset):
         self.slice_indices, self.volume_indices, self.total_slices, self.volumes = self.read_volumes(self.full_labelmap_path_imgs)
         self.mask_slice_indices, self.mask_volume_indices, self.mask_total_slices, self.mask_volumes = self.read_volumes(self.full_labelmap_path_masks)
 
-        self.transform_img = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(1.0, 2.0), fill=9),
-            transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
-            transforms.RandomVerticalFlip()
-        ])
+
+        if self.params.aorta_only:
+            self.transform_img = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(1.0, 2.0), fill=9),
+                transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
+                # transforms.RandomVerticalFlip()
+            ])
+        else:
+            self.transform_img = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(1.0, 2.0), fill=9),
+                transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
+                transforms.RandomVerticalFlip()
+            ])
 
         if self.params.pred_label == 13:
             self.transform_img = transforms.Compose([
                 transforms.ToTensor(),
                 transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(0.9, 1.0), fill=9),
                 transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
-                transforms.RandomVerticalFlip()
+                # transforms.RandomVerticalFlip()
         ])
-
-
-        # self.transform_mask = transforms.Compose([
-        #     transforms.ToTensor(),
-        #     transforms.RandomRotation(degrees=(0, 30), fill=0)
-        # ])
 
 
     def __len__(self):
         if self.params.debug:
             return self.total_slices  // 20    #for debugging
         else:
-            return self.total_slices
+            return self.total_slices  #// 2
 
     def read_volumes(self, full_labelmap_path):
         slice_indices = []
@@ -120,6 +123,11 @@ class CT3DLabelmapDataset(Dataset):
         if self.params.pred_label == 13:
             labelmap_slice = transforms.functional.hflip(labelmap_slice)
             mask_slice = transforms.functional.hflip(mask_slice)
+
+        #for aorta_only
+        if self.params.aorta_only:
+            labelmap_slice = transforms.functional.vflip(labelmap_slice)
+            mask_slice = transforms.functional.vflip(mask_slice)
 
 
 

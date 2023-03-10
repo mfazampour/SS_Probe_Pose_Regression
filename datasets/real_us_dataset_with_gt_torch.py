@@ -50,9 +50,9 @@ class RealUSGTDataset(Dataset):
         mask = self.transform_mask(mask)
         mask = torch.where(mask > 0 , 1, 0)
         
-        if "aorta_only" not in self.root_dir_imgs:
-            image = F.vflip(image)
-            mask = F.vflip(mask)
+        # if "aorta_only" not in self.root_dir_imgs:
+        #     image = F.vflip(image)
+        #     mask = F.vflip(mask)
 
 
         return image, mask
