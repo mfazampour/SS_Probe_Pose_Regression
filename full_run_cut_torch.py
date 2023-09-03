@@ -33,7 +33,7 @@ from monai.metrics import HausdorffDistanceMetric
 from models.us_rendering_model_torch import UltrasoundRendering
 
 MANUAL_SEED = False
-NR_IMGS_TO_PLOT = 16
+NR_IMGS_TO_PLOT = 32
 
 # torch.use_deterministic_algorithms(True, warn_only=True)
 # tb_logger = SummaryWriter('log_dir/cactuss_end2end')
@@ -614,7 +614,7 @@ if __name__ == "__main__":
 
                         if hparams.log_default_renderer and nr < NR_IMGS_TO_PLOT:
                             us_sim_def = USRendereDefParams(val_input_copy.squeeze()) 
-
+                            if not hparams.use_idtB: idt_B_val = us_sim
                             plot_fig = plotter.plot_stopp_crit(caption="default_renderer|labelmap|defaultUS|learnedUS|seg_input|seg_pred|gt",
                                                         imgs=[val_input, us_sim_def, us_sim, idt_B_val, rendered_seg_pred, val_label], 
                                                         img_text='', epoch=epoch, plot_single=False) #mean_diff=' + "{:.4f}".format(seg_pred_mean_diff.item()), )

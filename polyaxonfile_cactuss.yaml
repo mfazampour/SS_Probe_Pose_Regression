@@ -10,7 +10,6 @@ tags: [examples]
 build:
   env_vars:
     - ["LC_ALL" , "C.UTF-8"]
-  #image: pytorch/pytorch:1.8.1-cuda11.1-cudnn8-runtime
   image: pytorch/pytorch:1.11.0-cuda11.3-cudnn8-runtime
 
   build_steps:
@@ -19,8 +18,6 @@ build:
     - apt install ffmpeg libsm6 libxext6  -y
     - apt install -y libglib2.0-0 libxrender-dev git libgl1 libgl1-mesa-glx
     - pip install -r requirements.txt
-#    - pip install torch==1.8.1+cu111 torchvision==0.9.1+cu111 torchaudio==0.8.1 -f https://download.pytorch.org/whl/torch_stable.html
-#    - pip install torch==1.11.1+cu102 torchvision==0.12.1+cu102 -f https://download.pytorch.org/whl/torch_stable.html
     - wandb login 8c270b01bc99a827f2a310b570e150f98b6dd278
 
 environment:
@@ -29,7 +26,7 @@ environment:
       requests: 3
       limits: 4
     memory:
-      requests: 16000
+      requests: 32000
       limits: 64000 
     gpu:
       requests: 1
@@ -40,6 +37,5 @@ environment:
 
 run:
   cmd:
-  - python3 ./full_run_cut_torch.py -c config/config_run_seg+cut_torch.yml
-  # - python3 ./full_run_discr_torch.py -c config/config_run_discr_torch.yml --on_polyaxon
-  # - python3 ./full_run_torch.py -c config/config_run_torch.yml --on_polyaxon
+    - python3 ./full_run_cut_torch_cactuss.py -c config/config_run_seg+cut_torch_aorta_only_cactuss.yml
+

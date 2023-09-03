@@ -1,0 +1,11 @@
+torch>=1.4.0
+torchvision>=0.5.0
+dominate>=2.4.0
+visdom>=0.1.8.8
+packaging
+GPUtil>=1.4.0
+polyaxon-client==0.4.4
+jsonpatch
+wandb==0.10.23
+matplotlib
+opencv-python

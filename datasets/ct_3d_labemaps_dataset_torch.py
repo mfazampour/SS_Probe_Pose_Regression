@@ -34,18 +34,27 @@ class CT3DLabelmapDataset(Dataset):
 
 
         if self.params.aorta_only:
+            # self.transform_img = transforms.Compose([
+            #     transforms.ToTensor(),
+            #     transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(1.0, 2.0), fill=9),
+            #     transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
+            # ])
             self.transform_img = transforms.Compose([
                 transforms.ToTensor(),
-                transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(1.0, 2.0), fill=9),
-                transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
-                # transforms.RandomVerticalFlip()
+                transforms.Resize([380, 380], transforms.InterpolationMode.NEAREST),
+                transforms.CenterCrop((SIZE_W)),
             ])
         else:
+            # self.transform_img = transforms.Compose([
+            #     transforms.ToTensor(),
+            #     # transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(1.0, 2.0), fill=9),
+            #     # transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
+            #     # transforms.RandomVerticalFlip()
+            # ])
             self.transform_img = transforms.Compose([
                 transforms.ToTensor(),
-                transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(1.0, 2.0), fill=9),
-                transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
-                transforms.RandomVerticalFlip()
+                transforms.Resize([380, 380], transforms.InterpolationMode.NEAREST),
+                transforms.CenterCrop((SIZE_W)),
             ])
 
         if self.params.pred_label == 13:
@@ -54,12 +63,17 @@ class CT3DLabelmapDataset(Dataset):
                 transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(0.9, 1.0), fill=9),
                 transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
                 # transforms.RandomVerticalFlip()
-        ])
+            ])
+            # self.transform_img = transforms.Compose([
+            #     transforms.ToTensor(),
+            #     transforms.Resize([320, 320], transforms.InterpolationMode.NEAREST),
+            #     transforms.CenterCrop((SIZE_W)),
+            # ])
 
 
     def __len__(self):
         if self.params.debug:
-            return self.total_slices  // 20    #for debugging
+            return self.total_slices  #// 20    #for debugging
         else:
             return self.total_slices  #// 2
 
@@ -109,6 +123,7 @@ class CT3DLabelmapDataset(Dataset):
         labelmap_slice = self.transform_img(labelmap_slice)
         torch.set_rng_state(state)
         mask_slice = self.transform_img(mask_slice)
+
         mask_slice = torch.where(mask_slice != self.params.pred_label, 0, 1)
         
         us_mask = Image.open('us_convex_mask.png')

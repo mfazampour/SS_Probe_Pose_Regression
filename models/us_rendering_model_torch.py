@@ -1,4 +1,3 @@
-import torch.nn as nn
 import torch.nn.functional as F
 import torch
 import numpy as np
@@ -6,8 +5,7 @@ import matplotlib.pyplot as plt
 import os
 from PIL import Image
 from torchvision import transforms
-import torch.nn.functional as F
-import cv2
+# import cv2
 from scipy.interpolate import interp2d
 from math import pi, atan2, hypot
 
@@ -21,16 +19,16 @@ from math import pi, atan2, hypot
 # mu_1_def_dict = torch.rand(9, requires_grad=True).to(device='cuda') 
 # sigma_0_def_dict = torch.rand(9, requires_grad=True).to(device='cuda')
                                     #    2        3    4      6     8    9     11     12    13
-acoustic_imped_def_dict = torch.tensor([0.0004, 1.38, 1.61,  1.62, 1.62, 0.3,  1.65, 1.63, 7.8], requires_grad=True).to(device='cuda')    # Z in MRayl
-attenuation_def_dict =    torch.tensor([1.64,   0.63, 0.18,  1.0,  1.09, 0.54, 0.7,  0.54, 5.0], requires_grad=True).to(device='cuda')    # alpha in dB cm^-1 at 1 MHz
-mu_0_def_dict =           torch.tensor([0.78,   0.5,  0.001, 0.4,  0.4,  0.3,  0.19, 0.64, 0.78], requires_grad=True).to(device='cuda') # mu_0 - scattering_mu   mean brightness
-mu_1_def_dict =           torch.tensor([0.56,   0.5,  0.0,   0.6,  0.6,  0.2,  1.0,  0.64, 0.56], requires_grad=True).to(device='cuda') # mu_1 - scattering density, Nr of scatterers/voxel
-sigma_0_def_dict =        torch.tensor([0.1,    0.0,  0.01,  0.3,  0.3,  0.0,  0.24, 0.1,  0.1], requires_grad=True).to(device='cuda') # sigma_0 - scattering_sigma - brightness std
+acoustic_imped_def_dict = torch.tensor([0.0004, 1.38, 1.61,  1.62, 1.62,  0.3,  1.65, 1.63, 7.8], requires_grad=True).to(device='cuda')    # Z in MRayl
+attenuation_def_dict =    torch.tensor([1.64,   0.63, 0.18,  1.0,  1.09, 0.54,  0.7,  0.54, 5.0], requires_grad=True).to(device='cuda')    # alpha in dB cm^-1 at 1 MHz
+mu_0_def_dict =           torch.tensor([0.78,   0.5,  0.001, 0.45,  0.45,  0.3,  0.4, 0.45, 0.78], requires_grad=True).to(device='cuda') # mu_0 - scattering_mu   mean brightness
+mu_1_def_dict =           torch.tensor([0.56,   0.5,  0.0,   0.6,  0.64,  0.2,  0.8,  0.64, 0.56], requires_grad=True).to(device='cuda') # mu_1 - scattering density, Nr of scatterers/voxel
+sigma_0_def_dict =        torch.tensor([0.1,    0.0,  0.01,  0.3,  0.1,   0.0,  0.14, 0.1,  0.1], requires_grad=True).to(device='cuda') # sigma_0 - scattering_sigma - brightness std
 
 
 alpha_coeff_boundary_map = 0.1
-beta_coeff_scattering = 10
-TGC = 6
+beta_coeff_scattering = 10  #100 approximates it closer
+TGC = 8
 CLAMP_VALS = True
 CACTUSS_COEFF = 10000
 
@@ -179,7 +177,7 @@ class UltrasoundRendering(torch.nn.Module):
         reflection_total_plot = torch.log(reflection_total + torch.finfo(torch.float32).eps)
 
         texture_noise = torch.randn(H, W, dtype=torch.float32).to(device='cuda')
-        scattering_probability = torch.randn(H, W, dtype=torch.float32).to(device='cuda') #+ 1   #?????
+        scattering_probability = torch.randn(H, W, dtype=torch.float32).to(device='cuda') 
 
         scattering_zero = torch.zeros(H, W, dtype=torch.float32).to(device='cuda')
 
@@ -280,26 +278,82 @@ class UltrasoundRendering(torch.nn.Module):
 
         return z_vals 
 
-    def warp_img(self, inputImage):
 
-        resultWidth = 400
+    def warp_img_torch(self, inputImage):
+        resultWidth = 360
         resultHeight = 220
         centerX = resultWidth / 2
-        centerY = -100.0
+        centerY = -120.0
         maxAngle =  60.0 / 2 / 180 * pi #rad
         minAngle = -maxAngle
-        minRadius = 120.0
+        minRadius = 140.0
+        maxRadius = 340.0
+
+        h, w = inputImage.shape
+        inputImage = inputImage.float().unsqueeze(0)
+        xx, yy = torch.meshgrid(torch.arange(resultWidth), torch.arange(resultHeight))
+
+        dx = xx - centerX
+        dy = yy - centerY
+        angle = torch.atan2(dx, dy)  # yes, dx, dy in this case!
+
+        origCol = (angle - minAngle) / (maxAngle - minAngle) * w
+        radius = torch.hypot(dx, dy)
+
+        origRow = (radius - minRadius) / (maxRadius - minRadius) * h
+
+        grid = torch.stack((origCol, origRow), dim=-1)
+        grid = grid.unsqueeze(0).to('cuda') 
+        output = F.grid_sample(inputImage.float(), grid)
+
+        h, w = inputImage.shape
+        inputImage = inputImage.float().unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
+        xx, yy = torch.meshgrid(torch.arange(resultWidth), torch.arange(resultHeight))
+        xx = xx - centerX
+        yy = yy - centerY
+        angle = torch.atan2(xx, yy)  # yes, xx, yy in this case!
+        mask = (angle < maxAngle) & (angle > minAngle)
+        radius = torch.sqrt(xx**2 + yy**2)
+        mask &= (radius > minRadius) & (radius < maxRadius)
+        origRow = (radius - minRadius) / (maxRadius - minRadius) * h
+        resultImage = torch.zeros([1, resultHeight, resultWidth], dtype=torch.float32)
+        for c in range(resultWidth):
+            for r in range(resultHeight):
+                dx = c - centerX
+                dy = 0 - centerY
+                angle = atan2(dx, dy)  # yes, dx, dy in this case!
+                if angle < maxAngle and angle > minAngle:
+                    col = (angle - minAngle) / (maxAngle - minAngle) * w
+                    row = (0 - minRadius) / (maxRadius - minRadius) * h
+                    grid = torch.tensor([[[[col, row]]]]).float().to('cuda')  # Add batch dimension to grid
+                    resultImage[0, r, c] = F.grid_sample(inputImage, grid, mode='bilinear')
+        resultImage = resultImage * torch.transpose(mask, 0, 1)  # Apply mask to result image
+        resultImage_resized = F.resize(resultImage.unsqueeze(0).float(), (256, 256)).float()
+        resultImage_resized = transforms.Resize((256,256))(resultImage).float().squeeze()
+
+        return resultImage_resized
+
+    def warp_img(self, inputImage):
+
+        resultWidth = 360
+        resultHeight = 220
+        centerX = resultWidth / 2
+        centerY = -120.0
+        maxAngle =  60.0 / 2 / 180 * pi #rad
+        minAngle = -maxAngle
+        minRadius = 140.0
         maxRadius = 340.0
 
         # inputImage = np.swapaxes(cv2.imread(inputImagePath, cv2.IMREAD_GRAYSCALE),1,0)
         print(inputImage.shape)
-        h, w = inputImage.shape
-        inputImage = np.expand_dims(inputImage, axis=0)
-        inputImage = torch.from_numpy(inputImage).float().unsqueeze(0)
+        h, w = inputImage.squeeze().shape
+        #inputImage = np.expand_dims(inputImage.detach().cpu(), axis=0)
+        # inputImage = torch.from_numpy(inputImage).float().unsqueeze(0)
+        inputImage = inputImage.unsqueeze(0).unsqueeze(0).detach().cpu()
 
         interpolated = interp2d(range(w), range(h), inputImage[0][0])
 
-        resultImage = torch.zeros([1, resultHeight, resultWidth], dtype=torch.uint8)
+        resultImage = torch.zeros([1, resultHeight, resultWidth], dtype=torch.float64)
 
         for c in range(resultWidth):
             for r in range(resultHeight):
@@ -313,10 +367,75 @@ class UltrasoundRendering(torch.nn.Module):
                         origRow = (radius - minRadius) / (maxRadius - minRadius) * h
                         resultImage[0, r, c] = torch.tensor(interpolated(origCol, origRow))
 
-        resultImage_resized = F.resize(resultImage.unsqueeze(0), (256, 256)).float()
-        self.plot_fig(self.resultImage_resized, "resultImage_resized", True)
+        resultImage_resized = transforms.Resize((256,256))(resultImage).float().squeeze()
+        # resultImage_resized = F.resize(resultImage.unsqueeze(0), (256, 256)).float()
+        self.plot_fig(resultImage_resized, "resultImage_resized", True)
 
         return resultImage_resized
+
+    def warp_img2(self, inputImage):
+
+        resultWidth = 360
+        resultHeight = 220
+        centerX = resultWidth / 2
+        centerY = -120.0
+        maxAngle =  60.0 / 2 / 180 * pi #rad
+        minAngle = -maxAngle
+        minRadius = 140.0
+        maxRadius = 340.0
+        
+        h, w = inputImage.squeeze().shape
+
+        import torch.nn.functional as F
+
+        # Create x and y grids
+        x = torch.arange(resultWidth).float() - centerX
+        y = torch.arange(resultHeight).float() - centerY
+        xx, yy = torch.meshgrid(x, y)
+
+        # Calculate angle and radius
+        angle = torch.atan2(xx, yy)
+        radius = torch.sqrt(xx ** 2 + yy ** 2)
+
+        # Create masks for angle and radius
+        angle_mask = (angle > minAngle) & (angle < maxAngle)
+        radius_mask = (radius > minRadius) & (radius < maxRadius)
+
+        # Calculate original column and row
+        origCol = (angle - minAngle) / (maxAngle - minAngle) * w
+        origRow = (radius - minRadius) / (maxRadius - minRadius) * h
+
+        # Reshape input image to be a batch of 1 image
+        inputImage = inputImage.float().unsqueeze(0).unsqueeze(0)
+
+        # Scale original column and row to be in the range [-1, 1]
+        origCol = origCol / (w - 1) * 2 - 1
+        origRow = origRow / (h - 1) * 2 - 1
+
+        # Transpose input image to have channels first
+        inputImage = inputImage.permute(0, 1, 3, 2)
+
+        # Use grid_sample to interpolate
+        # resultImage = F.grid_sample(inputImage, torch.stack([origCol, origRow], dim=-1), mode='bilinear', align_corners=True)
+        grid = torch.stack([origCol, origRow], dim=-1).unsqueeze(0).to('cuda')
+        resultImage = F.grid_sample(inputImage, grid, mode='bilinear', align_corners=True)
+
+        # self.plot_fig(resultImage.squeeze(), "resultImage_resized", True)
+
+        resultImage_resized = transforms.Resize((256,256))(resultImage).float().squeeze()
+
+        # self.plot_fig(resultImage_resized.squeeze(), "resultImage_resized", True)
+
+
+        # Transpose output image to have channels last
+        #resultImage = resultImage.permute(0, 1, 3, 2)
+
+        # Apply masks and set values outside of mask to 0
+        # resultImage[~(angle_mask.unsqueeze(0).unsqueeze(0) & radius_mask.unsqueeze(0).unsqueeze(0))] = 0.0
+
+        return resultImage_resized
+
+
 
 
 
@@ -393,7 +512,7 @@ class UltrasoundRendering(torch.nn.Module):
 
         ret_list = self.rendering(ct_slice.shape[0], ct_slice.shape[1], z_vals=z_vals, refl_map=refl_map, boundary_map=boundary_map)
 
-        self.intensity_map  = ret_list[0]
+        intensity_map  = ret_list[0]
 
         if self.params.debug:  self.plot_fig(self.intensity_map, "intensity_map", True)
 
@@ -412,18 +531,26 @@ class UltrasoundRendering(torch.nn.Module):
         #         self.plot_fig(result_np, result_list[k], True)
         #     print(result_list[k], ", ", result_np.shape)
 
-        us_mask = Image.open('us_convex_mask.png')
-        us_mask = us_mask.resize((ret_list[0].shape[0], ret_list[0].shape[1]))
-        us_mask = transforms.ToTensor()(us_mask).squeeze().to(device='cuda')
-        us_mask = torch.where(us_mask > 0., torch.tensor(1., dtype=torch.float32).to(device='cuda'), torch.tensor(0., dtype=torch.float32).to(device='cuda'))
-
-        self.intensity_map_masked = self.intensity_map  * torch.transpose(us_mask, 0, 1) #np.transpose(us_mask)
-        self.intensity_map_masked = torch.rot90(self.intensity_map_masked, 3, [0, 1])
 
         if self.params.warp_img: 
-            self.intensity_map_rot = torch.rot90(self.intensity_map, 3, [0, 1])
-            resultImage_resized = self.warp_img(self, self.intensity_map_rot)
+            #intensity_map_rot = torch.rot90(intensity_map, 3, [0, 1])
+            # resultImage_resized = self.warp_img(intensity_map_rot)
+            intensity_map_masked = self.warp_img2(intensity_map)
+            intensity_map_masked = torch.rot90(intensity_map_masked, 3)
+
+            # resultImage_resized = self.warp_img_torch(intensity_map_rot)
+        else:
+            us_mask = Image.open('us_convex_mask.png')
+            us_mask = us_mask.resize((ret_list[0].shape[0], ret_list[0].shape[1]))
+            us_mask = transforms.ToTensor()(us_mask).squeeze().to(device='cuda')
+            us_mask = torch.where(us_mask > 0., torch.tensor(1., dtype=torch.float32).to(device='cuda'), torch.tensor(0., dtype=torch.float32).to(device='cuda'))
+
+            intensity_map_masked = intensity_map  * torch.transpose(us_mask, 0, 1) #np.transpose(us_mask)
+            intensity_map_masked = torch.rot90(intensity_map_masked, 3, [0, 1])
+
+
         
-        # if self.params.debug:  self.plot_fig(self.intensity_map_masked, "intensity_map_masked", True)
-        return self.intensity_map_masked
+        if self.params.debug:  self.plot_fig(intensity_map_masked, "intensity_map_masked", True)
+
+        return intensity_map_masked
 

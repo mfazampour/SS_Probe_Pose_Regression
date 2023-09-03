@@ -1,41 +1,49 @@
-exp_name : inner+outer_
+exp_name : inner+outer_batch1_
 project_name : cactuss_end2end-Segmentation
 base_folder_data_path: /home/aorta-scan/dani/data/CTs+labelmaps_cropped/
 # base_folder_data_path: /home/aorta-scan/dani/data/CTs+labelmaps_cropped_catheter/
+# base_folder_mask_path : /home/aorta-scan/dani/data/CTs+labelmaps_cropped_aorta_only/
+base_folder_mask_path : /home/aorta-scan/dani/data/CTs+labelmaps_cropped/
 labelmap_path : /ct_labelmap2/ #
 output_path : /home/aorta-scan/dani/repos/cactuss_end2end
 
 module : segmentationUnetSim_torch.SegmentationSim
 
-outer_model : UNet
+# outer_model : UNet
+outer_model : unet_2d.OriginalUNet
+
 inner_model : us_rendering_model_torch.UltrasoundRendering
+# inner_model : us_rendering_catheter_model_torch.UltrasoundRendering
 
 dataset : ct_3d_labemaps_dataset_torch.CT3DLabelmapDataset
 datamodule : ct_3d_labemaps_dataset_torch.CT3DLabelmapDataLoader
 n_classes : 1
-pred_label : 6    # 4-vessel, 6-kidney, 11-liver
+pred_label : 4    # 4-vessel, 6-kidney, 10 - catheter, 11-liver
 
-num_workers : 1 #24
+num_workers : 0 #24
 
 
 batch_size : 1
+batch_size_manual : 1
 global_learning_rate: 0.005 # 5e-3
-inner_model_learning_rate: 0.0005
-outer_model_learning_rate: 0.005 
+inner_model_learning_rate: 0.005
+outer_model_learning_rate: 0.005
 
 # early_stopping_metric : val_loss_epoch  #val_loss  #default
 # save_top_k : 1
-min_epochs : 1
-max_epochs : 200
-early_stopping_patience : 2
+min_epochs : 30
+max_epochs : 70
+early_stopping_patience : 3
 validate_every_n_steps : 1 #default is 50
 
 # log_interval : 100 #default
 # limit_train : 1.0 #1.0 default
 # limit_val : 1.0
 
-on_polyaxon : False
+on_polyaxon : True
 logging : True
-polyaxon_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped/
-
-
+wandb_conf : False
+# polyaxon_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped/
+polyaxon_imgs_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped/
+polyaxon_masks_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped/
+# polyaxon_masks_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped_aorta_only/

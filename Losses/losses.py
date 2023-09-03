@@ -27,10 +27,10 @@ class SoftDiceLoss(nn.Module):
 
         num_classes = logits.shape[1]
         true=true.long()
-        print(true.size())
+        # print(true.size())
         if num_classes == 1:
             # print('NUM CLASSES: ', num_classes)
-            true_1_hot = torch.eye(num_classes + 1)[true.squeeze(1)]
+            true_1_hot = torch.eye(num_classes + 1)[true.squeeze(1)].to('cuda')
             true_1_hot = true_1_hot.permute(0, 3, 1, 2).float()
             true_1_hot_f = true_1_hot[:, 0:1, :, :]
             true_1_hot_s = true_1_hot[:, 1:2, :, :]

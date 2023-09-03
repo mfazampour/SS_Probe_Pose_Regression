@@ -8,6 +8,7 @@ parts
 sdist
 var
 *.pyc
+*.pt
 *.swp
 .DS_Store
 ./.polyaxon
