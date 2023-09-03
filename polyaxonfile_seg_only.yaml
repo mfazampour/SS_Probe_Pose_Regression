@@ -34,12 +34,10 @@ environment:
     gpu:
       requests: 1
       limits: 1
-#  node_selector:
-#    gpuMemory: "24"
+  # node_selector:
+  #   gpuMemory: "24"
 #    nvidiaDriver: "460"
 
 run:
   cmd:
-  - python3 ./full_run_cut_torch.py -c config/config_run_seg+cut_torch.yml
-  # - python3 ./full_run_discr_torch.py -c config/config_run_discr_torch.yml --on_polyaxon
-  # - python3 ./full_run_torch.py -c config/config_run_torch.yml --on_polyaxon
+  - python3 ./full_run_torch.py -c config/config_run_torch.yml

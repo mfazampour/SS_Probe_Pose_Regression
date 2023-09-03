@@ -3,7 +3,7 @@ https://lmb.informatik.uni-freiburg.de/people/ronneber/u-net/
 https://github.com/milesial/Pytorch-UNet/blob/master/unet/unet_model.py
 """
 
-import pytorch_lightning as pl
+# import pytorch_lightning as pl
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
@@ -15,12 +15,11 @@ import sys
 from utils.utils import get_argparser_group
 
 
-
-class OriginalUNet(pl.LightningModule):
+# class OriginalUNet(pl.LightningModule):
+class OriginalUNet(torch.nn.Module):
     def __init__(self, hparams):
         super(OriginalUNet, self).__init__()
-        self.save_hyperparameters()
-        # self.hparams = hparams
+        self.hparams = hparams
         # if hparams is not None:
         #     self.n_channels = hparams.in_channels
         #     self.n_classes = hparams.out_channels
@@ -36,11 +35,14 @@ class OriginalUNet(pl.LightningModule):
         self.down3 = Down(128, 256)
         factor = 2 if self.bilinear else 1
         self.down4 = Down(256, 512 // factor)
-        self.up1 = Up(512, 256 // factor, self.bilinear)
-        self.up2 = Up(256, 128 // factor, self.bilinear)
-        self.up3 = Up(128, 64 // factor, self.bilinear)
-        self.up4 = Up(64, 32, self.bilinear)
+        self.up1 = Up(512, 256 // factor, self.bilinear, self.hparams)
+        self.up2 = Up(256, 128 // factor, self.bilinear, self.hparams)
+        self.up3 = Up(128, 64 // factor, self.bilinear, self.hparams)
+        self.up4 = Up(64, 32, self.bilinear, self.hparams)
         self.out = nn.Conv2d(32, self.n_classes, kernel_size=1)
+
+        # if hparams.dropout:
+            # self.dropout = nn.Dropout(hparams.dropout_ratio)
         # final layer for activation i.e. converting the logits to a value between 0 and 1
         # self.activation = nn.Softmax(dim=1)
         # self.softmax = nn.LogSoftmax(dim=1)
@@ -49,9 +51,18 @@ class OriginalUNet(pl.LightningModule):
         # batch, channels, width, height = x.size()
         x1 = self.inc(x)
         x2 = self.down1(x1)
+        # if self.hparams.dropout: 
+            # x2 = self.dropout(x2)
+
         x3 = self.down2(x2)
+        # if self.hparams.dropout: x3 = self.dropout(x3)
+
         x4 = self.down3(x3)
+        # if self.hparams.dropout: x4 = self.dropout(x4)
+
         x5 = self.down4(x4)
+        # if self.hparams.dropout: x5 = self.dropout(x5)
+
         x = self.up1(x5, x4)
         x = self.up2(x, x3)
         x = self.up3(x, x2)
@@ -69,7 +80,7 @@ class OriginalUNet(pl.LightningModule):
         return parser
 
 
-class DoubleConv(pl.LightningModule):
+class DoubleConv(torch.nn.Module):
     """
     First step of the network: apply 3x3 conv + ReLU twice to the input image of size 572 * 572 * 1.
     The output size of this first step is 568 * 568 * 64.
@@ -84,10 +95,10 @@ class DoubleConv(pl.LightningModule):
         self.double_conv = nn.Sequential(
             nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(mid_channels),
-            nn.ReLU(),   #(inplace=True),
+            nn.ReLU(),  
             nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU()   #(inplace=True)
+            nn.ReLU()   
         )
 
     def forward(self, x):
@@ -95,7 +106,7 @@ class DoubleConv(pl.LightningModule):
         return self.double_conv(x.float())
 
 
-class Down(pl.LightningModule):
+class Down(torch.nn.Module):
     """
     Each down block starts off with a 2x2 max pooling operation with stride 2
     and then contains two 3x3 convolutions + ReLu.
@@ -114,15 +125,20 @@ class Down(pl.LightningModule):
         return self.maxpool_conv(x)
 
 
-class Up(pl.LightningModule):
+class Up(torch.nn.Module):
+
     """
     Each up block starts off with a 2x2 up convolution with stride 2
     and then applies a copy and crop operation using the skip connections i.e. the data from the down path
     before applying two 3x3 convolutions + ReLu.
     """
 
-    def __init__(self, in_channels, out_channels, bilinear=True):
+    def __init__(self, in_channels, out_channels, bilinear=True, hparams=None):
         super().__init__()
+
+        self.hparams= hparams
+        # if hparams.dropout:
+        #     self.dropout = nn.Dropout(hparams.dropout_ratio)
 
         # if bilinear, use the normal convolutions to reduce the number of channels
         if bilinear:
@@ -144,4 +160,9 @@ class Up(pl.LightningModule):
         # https://github.com/HaiyongJiang/U-Net-Pytorch-Unstructured-Buggy/commit/0e854509c2cea854e247a9c615f175f76fbb2e3a
         # https://github.com/xiaopeng-liao/Pytorch-UNet/commit/8ebac70e633bac59fc22bb5195e513d5832fb3bd
         x = torch.cat([x2, x1], dim=1)
+
+        # if self.hparams.dropout:
+        #     x = self.dropout(x)
+        #     # print('DROPOUT')
+
         return self.conv(x)

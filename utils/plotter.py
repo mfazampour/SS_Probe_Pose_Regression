@@ -117,7 +117,6 @@ class Plotter(Callback):
         for i in range(2):
             for x in self.val_fold_dict_epoch:
                 if x['val_loss'] in get_top_last[i]:
-                    # for n in range(len(x["file_name"])):
                     self.preprocess_plot(x["file_name"][0],
                                         x["val_images_unet"].squeeze(),
                                         x["val_images_gt"].squeeze(),

@@ -112,7 +112,11 @@ class SegmentationSim(torch.nn.Module):
         output = self.outer_model.forward(us_sim)
 
         if self.params.warp_img: 
-            label = self.USRenderingModel.warp_img(label)
+            label = label.squeeze()
+            label = torch.rot90(label, 1)
+            label = self.USRenderingModel.warp_img2(label)
+            label = torch.rot90(label, 3)
+            label = label.unsqueeze(0).unsqueeze(0)
 
         if self.params.outer_model_monai:
             loss = self.loss_function(output, label)

@@ -1,0 +1,164 @@
+debug : False
+# exp_name : DEBUG_scattering_map+clamping_idt_FIX_SoftDice_augmCrop_aorta_only_
+exp_name : DEBUG_scattering_map+clamping_Idt_FIX_SoftDice_aorta_only_correctedCUTDataset_noFlip_ #StepLR  #plateau_CUTlr=0.00005_
+#exp_name : DEBUG_scattering_map+clamping_Idt_FreezeRendr_FIX_SoftDice_aorta_only_augm_dropout=0.1_
+project_name : cactuss_end2end-Segmentation         #the wandb project name
+base_folder_data_path: /home/aorta-scan/dani/data/CTs+labelmaps_cropped2/
+base_folder_mask_path : /home/aorta-scan/dani/data/CTs+labelmaps_cropped_aorta_only2/
+labelmap_path : /ct_labelmap2/
+aorta_only: True
+
+data_dir_real_us_cut_training : ./cut/datasets/aorta_us_8CTs/trainA_500
+data_dir_real_us_test : /home/aorta-scan/dani/data/GT_doctor/aorta/GT_doctor_aorta_only_100/
+data_dir_real_us_stopp_crit : /home/aorta-scan/dani/data/GT_doctor/aorta/GT_stopping_crit/
+
+output_path : /home/aorta-scan/dani/repos/cactuss_end2end/checkpoints
+device : cuda
+
+dataloader_ct_labelmaps : ct_3d_labemaps_dataset_torch.CT3DLabelmapDataLoader
+# dataloader_real_us : real_us_dataset_torch.RealUSDataLoader
+dataloader_real_us_test : real_us_dataset_with_gt_torch.RealUSGTDataset
+
+n_classes : 1
+pred_label : 4    # 4-vessel, 6-kidney, 10 - catheter, 11-liver
+
+module : segmentationUnetSim_torch.SegmentationSim
+
+outer_model_monai : False
+
+# outer_model_github : True
+# outer_model : unet_2d_github.UNet
+
+outer_model : unet_2d.OriginalUNet
+dropout: False
+dropout_ratio : 0.0
+seg_net_input_augmentations_noise_blur : True
+seg_net_input_augmentations_rand_crop : True
+
+inner_model : us_rendering_model_torch.UltrasoundRendering
+cactuss_mode : False
+warp_img : False
+
+num_workers : 1 #24
+
+batch_size : 1
+batch_size_manual : 1
+# global_learning_rate: 0.0001 # 5e-3
+inner_model_learning_rate: 0.0001
+outer_model_learning_rate: 0.00001
+scheduler : False
+grad_clipping: False
+# lambda_G_loss: 0.5
+
+# early_stopping_metric : val_loss_epoch  #val_loss  #default
+# save_top_k : 1
+min_epochs : 70
+max_epochs : 200
+early_stopping_patience : 30
+validate_every_n_steps : 1 #default is 50
+
+# log_interval : 100 #default
+# limit_train : 1.0 #1.0 default
+# limit_val : 1.0
+stopping_crit_gt_imgs : True
+plot_avg_seg_px_dff: True
+
+epochs_only_cut : 0
+epochs_only_seg_net : 0
+epochs_check_stopp_crit : 49
+
+use_idtB : True
+on_polyaxon : True
+logging : True
+log_default_renderer : True
+
+polyaxon_imgs_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped2/
+polyaxon_masks_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped_aorta_only2/
+
+#polyaxon_folder_real_us : /us_sim_sweeps/segmentation/cut/aorta_us_8CTs/trainA_500
+polyaxon_folder_real_us : /us_sim_sweeps/cactuss_end2end/data/real_us/aorta/CUT_trainA_500_corrected
+
+polyaxon_data_dir_real_us_test: /us_sim_sweeps/cactuss_end2end/data/real_us/aorta/GT_doctor_aorta_only/  #100imgs
+polyaxon_data_dir_real_us_stopp_crit : /us_sim_sweeps/cactuss_end2end/data/real_us/aorta/GT_stopping_crit/  #subset of 15imgs for stopp crit aftetr min_epochs
+
+
+
+# debug : False
+# # exp_name : DEBUG_scattering_map+clamping_idt_FIX_SoftDice_augmCrop_aorta_only_
+# exp_name : DEBUG_scattering_map+clamping_Idt_FIX_SoftDice_aorta_only_augm_correctedCUTDataset_noFlip_CUTcrops_plateau_CUTlr=0.00005_
+# #exp_name : DEBUG_scattering_map+clamping_Idt_FreezeRendr_FIX_SoftDice_aorta_only_augm_dropout=0.1_
+# project_name : cactuss_end2end-Segmentation         #the wandb project name
+# base_folder_data_path: /home/aorta-scan/dani/data/CTs+labelmaps_cropped2/
+# base_folder_mask_path : /home/aorta-scan/dani/data/CTs+labelmaps_cropped_aorta_only2/
+# labelmap_path : /ct_labelmap2/
+# aorta_only: True
+
+# data_dir_real_us_cut_training : ./cut/datasets/aorta_us_8CTs/trainA_500
+# data_dir_real_us_test : /home/aorta-scan/dani/data/GT_doctor/aorta/GT_doctor_aorta_only_100/
+# data_dir_real_us_stopp_crit : /home/aorta-scan/dani/data/GT_doctor/aorta/GT_stopping_crit/
+
+# output_path : /home/aorta-scan/dani/repos/cactuss_end2end/checkpoints
+# device : cuda
+
+# dataloader_ct_labelmaps : ct_3d_labemaps_dataset_torch.CT3DLabelmapDataLoader
+# # dataloader_real_us : real_us_dataset_torch.RealUSDataLoader
+# dataloader_real_us_test : real_us_dataset_with_gt_torch.RealUSGTDataset
+
+# n_classes : 1
+# pred_label : 4    # 4-vessel, 6-kidney, 10 - catheter, 11-liver
+
+# module : segmentationUnetSim_torch.SegmentationSim
+
+# outer_model_monai : False
+
+# # outer_model_github : True
+# # outer_model : unet_2d_github.UNet
+
+# outer_model : unet_2d.OriginalUNet
+# dropout: False
+# dropout_ratio : 0.0
+# seg_net_input_augmentations_noise_blur : True
+# seg_net_input_augmentations_rand_crop : True
+
+# inner_model : us_rendering_model_torch.UltrasoundRendering
+# cactuss_mode : False
+
+# num_workers : 1 #24
+
+# batch_size : 1
+# batch_size_manual : 1
+# # global_learning_rate: 0.0001 # 5e-3
+# inner_model_learning_rate: 0.0001
+# outer_model_learning_rate: 0.00001
+# grad_clipping: False
+# # lambda_G_loss: 0.5
+
+# # early_stopping_metric : val_loss_epoch  #val_loss  #default
+# # save_top_k : 1
+# min_epochs : 70
+# max_epochs : 200
+# early_stopping_patience : 5
+# validate_every_n_steps : 1 #default is 50
+
+# # log_interval : 100 #default
+# # limit_train : 1.0 #1.0 default
+# # limit_val : 1.0
+# stopping_crit_gt_imgs : True
+# plot_avg_seg_px_dff: True
+
+# epochs_only_cut : 0
+# epochs_only_seg_net : 0
+# epochs_check_stopp_crit : 10
+
+# use_idtB : True
+# on_polyaxon : True
+# logging : True
+
+# polyaxon_imgs_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped2/
+# polyaxon_masks_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped_aorta_only2/
+
+# #polyaxon_folder_real_us : /us_sim_sweeps/segmentation/cut/aorta_us_8CTs/trainA_500
+# polyaxon_folder_real_us : /us_sim_sweeps/cactuss_end2end/data/real_us/aorta/CUT_trainA_500_corrected
+
+# polyaxon_data_dir_real_us_test: /us_sim_sweeps/cactuss_end2end/data/real_us/aorta/GT_doctor_aorta_only/  #100imgs
+# polyaxon_data_dir_real_us_stopp_crit : /us_sim_sweeps/cactuss_end2end/data/real_us/aorta/GT_stopping_crit/  #subset of 15imgs for stopp crit aftetr min_epochs
