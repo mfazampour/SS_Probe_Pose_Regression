@@ -514,7 +514,7 @@ class UltrasoundRendering(torch.nn.Module):
 
         intensity_map  = ret_list[0]
 
-        if self.params.debug:  self.plot_fig(self.intensity_map, "intensity_map", True)
+        # if self.params.debug:  self.plot_fig(self.intensity_map, "intensity_map", True)
 
         # result_list = ["intensity_map", "attenuation_total", "reflection_total", 
         #                 "scatters_map", "scattering_probability", "border_convolution", 

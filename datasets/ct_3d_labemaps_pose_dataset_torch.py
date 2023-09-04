@@ -54,7 +54,7 @@ class CT3DLabelmapPoseDataset(Dataset):
 
     def __len__(self):
         if self.params.debug:
-            return self.total_slices.__len__() // 20  # for debugging
+            return self.total_slices.__len__() // 500  # for debugging
         else:
             return self.total_slices.__len__()
 
@@ -118,7 +118,9 @@ class CT3DLabelmapPoseDataset(Dataset):
         slice_data = sitk.GetArrayFromImage(slice_data)
         slice_data = slice_data.transpose(1, 2, 0)
         slice_data = slice_data[:, :, 1]
-        labelmap_slice = slice_data.astype('float64')
+        labelmap_slice = slice_data.astype('int64')
+        labelmap_slice[labelmap_slice == 0] = 9
+        labelmap_slice[labelmap_slice == 15] = 4
 
         # print('vol_nr: ', vol_nr, 'idx: ', idx)
         # labelmap_slice = self.volumes[vol_nr][:, :, self.slice_indices[idx]].astype('int64')        #labelmap input to the US renderer
@@ -136,7 +138,7 @@ class CT3DLabelmapPoseDataset(Dataset):
 
         position, quat = self.get_image_center_pose(vol_path)
 
-        pose = torch.cat((torch.tensor(position), torch.tensor(quat)), dim=0)
+        pose = np.concatenate((position, quat)).astype(np.float32)
 
         return labelmap_slice, pose, vol_path
 

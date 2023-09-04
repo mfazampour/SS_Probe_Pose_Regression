@@ -1,0 +1,82 @@
+debug : True
+# exp_name : DEBUG_scattering_map+clamping_freeze_renderer_idt_FIX_Monai_32-512_augm_noBlur_dropout_
+exp_name : DEBUG_scattering_map+clamping_Idt_FIX_SoftDice_augm_Vessels_
+project_name : PRIUS         #the wandb project name
+base_folder_data_path: /mnt/projects/aorta_scan/random_simulated_ultrasound/
+
+data_dir_real_us_cut_training : /mnt/projects/liver_scan/us_scans_Jun/2D_only/filtered/
+# data_dir_real_us_test : /home/aorta-scan/dani/data/GT_doctor/stopping_criter_vessels/
+data_dir_real_us_test : /home/farid/Desktop/phantom_simulated_data/  # todo: this should change to test set
+data_dir_real_us_stopp_crit : /home/farid/Desktop/phantom_simulated_data/  # todo: this I should check with Dani
+output_path : ./checkpoints  # todo: change to NAS
+device : cuda
+
+#dataset : ct_3d_labemaps_dataset_torch.CT3DLabelmapDataset
+dataloader_ct_labelmaps : ct_3d_labemaps_pose_dataset_torch.CT3DLabelmapPoseDataLoader
+#dataloader_real_us : real_us_dataset_torch.RealUSDataLoader
+dataloader_real_us_test : real_us_pose_dataset_with_gt_torch.PoseRegressionDataset
+
+n_classes : 1
+pred_label : 4    # 4-vessel, 6-kidney, 10 - catheter, 11-liver
+
+module : poseRegressionEfficientNetSim_torch.PoseRegressionSim
+
+outer_model_monai : False
+
+# outer_model_github : True
+# outer_model : unet_2d_github.UNet
+
+outer_model : unet_2d.OriginalUNet
+dropout: False
+dropout_ratio : 0.0
+seg_net_input_augmentations_noise_blur : True
+seg_net_input_augmentations_rand_crop : True  # todo: remove or change
+
+inner_model : us_rendering_model_torch.UltrasoundRendering
+cactuss_mode : False
+warp_img : True
+num_workers : 0 #24
+
+batch_size : 1
+batch_size_manual : 1
+# global_learning_rate: 0.0001 # 5e-3
+inner_model_learning_rate: 0.0001
+outer_model_learning_rate: 0.00001
+scheduler : False
+grad_clipping: False
+# lambda_G_loss: 0.5
+
+# early_stopping_metric : val_loss_epoch  #val_loss  #default
+# save_top_k : 1
+min_epochs : 1 #70
+max_epochs : 2 #200
+early_stopping_patience : 5
+validate_every_n_steps : 1 #default is 50
+
+# log_interval : 100 #default
+# limit_train : 1.0 #1.0 default
+# limit_val : 1.0
+stopping_crit_gt_imgs : True
+plot_avg_seg_px_dff: True
+
+epochs_only_cut : 0
+epochs_only_seg_net : 0
+epochs_check_stopp_crit : 50
+
+use_idtB : True
+on_polyaxon : False
+logging : True
+log_default_renderer : True
+
+polyaxon_imgs_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped2/
+polyaxon_masks_folder : /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped2/
+
+# polyaxon_folder_real_us : /us_sim_sweeps/segmentation/cut/aorta_us_8CTs/trainA_500
+polyaxon_folder_real_us : /us_sim_sweeps/cactuss_end2end/data/real_us/vessels/CUT_trainA_500
+
+# polyaxon_data_dir_real_us_test : /us_sim_sweeps/cactuss_end2end/data/real_us/vessels/GT_doctor_stopp_crit/stopping_criter_vessels/
+
+# polyaxon_data_dir_real_us_test : /us_sim_sweeps/cactuss_end2end/data/real_us/vessels/GT_data_vessels/
+
+polyaxon_data_dir_real_us_test : /us_sim_sweeps/cactuss_end2end/data/real_us/vessels/GT_data_vessels_100/GT_data_vessels_testing/
+polyaxon_data_dir_real_us_stopp_crit : /us_sim_sweeps/cactuss_end2end/data/real_us/vessels/GT_data_vessels_100/GT_data_vessels_stopp_crit/  #subset of 20imgs for stopp crit aftetr min_epochs
