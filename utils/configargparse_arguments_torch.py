@@ -29,6 +29,7 @@ def build_configargparser(parser):
     parser.add_argument("--dataloader_real_us_test", type=str, required=False)
     parser.add_argument("--n_classes", type=int, required=False)
     parser.add_argument("--pred_label", type=int, required=False)
+    parser.add_argument("--image_size", type=int, required=False, default=256)
 
     # Model
     parser.add_argument("--module", type=str, required=False)
@@ -38,6 +39,7 @@ def build_configargparser(parser):
     parser.add_argument("--dropout",  action="store_true")
     parser.add_argument("--dropout_ratio", type=float, required=False)
     parser.add_argument("--seg_net_input_augmentations_noise_blur",  action="store_true")
+    parser.add_argument("--net_input_augmentations_noise_blur", action="store_true")
     parser.add_argument("--seg_net_input_augmentations_rand_crop",  action="store_true")
 
     parser.add_argument("--inner_model", type=str, required=False)
@@ -68,6 +70,7 @@ def build_configargparser(parser):
 
     parser.add_argument("--epochs_only_cut", default=0, type=int)
     parser.add_argument("--epochs_only_seg_net", default=0, type=int)
+    parser.add_argument("--epochs_only_pose_net", default=0, type=int)
     parser.add_argument("--epochs_check_stopp_crit", default=0, type=int)
 
     parser.add_argument("--use_idtB", action="store_true")

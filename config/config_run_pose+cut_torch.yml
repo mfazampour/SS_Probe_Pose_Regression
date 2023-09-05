@@ -1,8 +1,8 @@
 # ================================
 # BASIC CONFIGURATIONS
 # ================================
-debug: False
-exp_name: DEBUG_scattering_map+clamping_Idt_FIX_SoftDice_augm_Vessels_
+debug: True
+exp_name: pose_regression_base_config_
 project_name: PRIUS           # Name of the WandB project
 device: cuda
 logging: True
@@ -16,6 +16,7 @@ data_dir_real_us_cut_training: /mnt/projects/liver_scan/us_scans_Jun/2D_only/fil
 data_dir_real_us_test: /home/farid/Desktop/phantom_simulated_data/  # TODO: Change to test set
 data_dir_real_us_stopp_crit: /home/farid/Desktop/phantom_simulated_data/  # TODO: Check with Dani
 output_path: ./checkpoints  # TODO: Change to NAS
+image_size: 256
 
 # Paths for Polyaxon  # these are not used anymore
 polyaxon_imgs_folder: /us_sim_sweeps/cactuss_end2end/data/CTs+labelmaps_cropped2/
@@ -37,7 +38,7 @@ inner_model: us_rendering_model_torch.UltrasoundRendering
 # ================================
 dropout: False
 dropout_ratio: 0.0
-seg_net_input_augmentations_noise_blur: True
+net_input_augmentations_noise_blur: True
 cactuss_mode: False
 warp_img: True
 num_workers: 0  # Previously: 24
@@ -52,9 +53,8 @@ max_epochs: 200  # Previously: 200
 early_stopping_patience: 5
 validate_every_n_steps: 1  # Default: 50
 stopping_crit_gt_imgs: True
-plot_avg_seg_px_dff: True
 epochs_only_cut: 0
-epochs_only_seg_net: 0
+epochs_only_pose_net: 0
 epochs_check_stopp_crit: 50
 use_idtB: True
 log_default_renderer: True

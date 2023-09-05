@@ -38,7 +38,7 @@ class PoseRegressionSim(torch.nn.Module):
             # transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),    #???
         ])
 
-        if params.seg_net_input_augmentations_noise_blur:  # todo: change the names later
+        if params.net_input_augmentations_noise_blur:  # todo: change the names later
             print(self.rendered_img_random_transf)
 
         # if params.outer_model_monai:

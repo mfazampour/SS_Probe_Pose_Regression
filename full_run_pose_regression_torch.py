@@ -223,7 +223,7 @@ def load_dataset(dataloader):
 
 
 def add_online_augmentations(hparams, input, label, module):
-    if hparams.seg_net_input_augmentations_noise_blur:
+    if hparams.net_input_augmentations_noise_blur:
         input = module.rendered_img_random_transf(input)
 
     return input, label
@@ -233,8 +233,8 @@ def main(opt_cut, hparams, plotter, visualizer):
     USRendereDefParams, cut_model, cut_trainer, early_stopping, early_stopping_best_val, inner_model, module, real_us_gt_test_dataloader, real_us_stopp_crit_dataloader, real_us_train_loader, train_loader_ct_labelmaps, val_loader_ct_labelmaps = prepare_for_training(
         hparams, opt_cut)
 
-    train_losses, valid_losses, testset_losses, hausdorff_epoch, stoppcrit_losses, avg_train_losses, avg_valid_losses, avg_seg_pred_mean_diff = (
-        [] for i in range(8))
+    train_losses, valid_losses, testset_losses, stoppcrit_losses, avg_train_losses, avg_valid_losses, avg_pred_mean_diff = (
+        [] for i in range(7))
     # G_train_losses, D_train_losses, D_real_train_losses, D_fake_train_losses = ([] for i in range(4))
     # G_val_losses, D_val_losses, D_real_val_losses, D_fake_val_losses = ([] for i in range(4))
 
@@ -260,10 +260,10 @@ def main(opt_cut, hparams, plotter, visualizer):
         # ------------------------------------------------------------------------------------------------------------------------------
         #                                         Train SEG NET only
         # ------------------------------------------------------------------------------------------------------------------------------
-        if epoch <= hparams.epochs_only_seg_net and hparams.epochs_only_seg_net > 0:
+        if epoch <= hparams.epochs_only_pose_net and hparams.epochs_only_pose_net > 0:
             # print(f"--------------- INIT SEG NET ------------", cut_trainer.total_iter)
             training_loop_pose_net(hparams, module, inner_model, hparams.batch_size_manual, train_loader_ct_labelmaps,
-                                  train_losses, plotter)  # todo: change this to pose net
+                                   train_losses, plotter)  # todo: change this to pose net
 
         # opt_cut.isTrain = True
         # ------------------------------------------------------------------------------------------------------------------------------
@@ -273,12 +273,13 @@ def main(opt_cut, hparams, plotter, visualizer):
             for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps),
                                          ncols=100, position=0, leave=True):
                 # print(f"--------------- INIT CUT ------------", cut_trainer.total_iter)
-                cut_trainer.train_cut(module, batch_data_ct, epoch, dataloader_real_us_iterator, iter_data_time, epoch_iter)
+                cut_trainer.train_cut(module, batch_data_ct, epoch, dataloader_real_us_iterator, iter_data_time,
+                                      epoch_iter)
 
         # ------------------------------------------------------------------------------------------------------------------------------
         #                                         Train US Renderer + SEG NET + CUT
         # ------------------------------------------------------------------------------------------------------------------------------
-        if epoch > hparams.epochs_only_seg_net:
+        if epoch > hparams.epochs_only_pose_net:
             only_CUT, only_SEGNET = train_epoch_full_pipeline(cut_trainer, dataloader_real_us_iterator, epoch,
                                                               epoch_iter, hparams, inner_model, iter_data_time, module,
                                                               only_CUT, only_SEGNET, plotter, step,
@@ -294,10 +295,9 @@ def main(opt_cut, hparams, plotter, visualizer):
         if epoch % hparams.validate_every_n_steps == 0 and epoch > hparams.epochs_only_cut:
             stop_early = validation_and_stop_check(USRendereDefParams, avg_train_losses, avg_valid_losses, cut_model,
                                                    cut_trainer, dataloader_real_us_iterator, early_stopping,
-                                                   early_stopping_best_val, epoch, hausdorff_epoch, hparams,
-                                                   inner_model, module, plotter, real_us_gt_test_dataloader,
-                                                   real_us_stopp_crit_dataloader, real_us_train_loader,
-                                                   stoppcrit_losses, testset_losses, train_losses,
+                                                   early_stopping_best_val, epoch, hparams, inner_model, module,
+                                                   plotter, real_us_gt_test_dataloader, real_us_stopp_crit_dataloader,
+                                                   real_us_train_loader, stoppcrit_losses, testset_losses, train_losses,
                                                    val_loader_ct_labelmaps, valid_losses)
 
         if stop_early:
@@ -307,13 +307,14 @@ def main(opt_cut, hparams, plotter, visualizer):
         train_losses = []
         valid_losses = []
 
-    print(f'train completed, avg_train_losses: {np.mean(avg_train_losses)} avg_valid_losses: {np.mean(avg_valid_losses)}')
+    print(
+        f'train completed, avg_train_losses: {np.mean(avg_train_losses)} avg_valid_losses: {np.mean(avg_valid_losses)}')
     print(f'best val_loss: {early_stopping.val_loss_min} at best_epoch: {early_stopping.best_epoch}')
 
 
 def validation_and_stop_check(USRendereDefParams, avg_train_losses, avg_valid_losses, cut_model, cut_trainer,
                               dataloader_real_us_iterator, early_stopping, early_stopping_best_val, epoch,
-                              hausdorff_epoch, hparams, inner_model, module, plotter, real_us_gt_test_dataloader,
+                              hparams, inner_model, module, plotter, real_us_gt_test_dataloader,
                               real_us_stopp_crit_dataloader, real_us_train_loader, stoppcrit_losses,
                               testset_losses, train_losses, val_loader_ct_labelmaps, valid_losses):
     stop_early = False
@@ -326,8 +327,6 @@ def validation_and_stop_check(USRendereDefParams, avg_train_losses, avg_valid_lo
     print(f"--------------- VALIDATION SEG NET ------------")
     stopp_crit_plot_figs = []
     def_renderer_plot_figs = []
-    reconstructed_seg_pred_nr_white_pxs = []
-    rendered_seg_pred_nr_white_pxs = []
     wasserstein_distance_bw_rendered_reconstr = []
     wasserstein_distance_bw_rendered_idt_reconstr = []
     with torch.no_grad():
@@ -335,23 +334,20 @@ def validation_and_stop_check(USRendereDefParams, avg_train_losses, avg_valid_lo
                                           total=len(val_loader_ct_labelmaps), ncols=100, desc="validation"):
             val_step += 1
 
-            validation_one_step(USRendereDefParams, cut_trainer, dataloader_real_us_iterator,
-                                def_renderer_plot_figs, epoch, hparams, module, nr, plotter,
-                                real_us_train_loader, reconstructed_seg_pred_nr_white_pxs,
-                                rendered_seg_pred_nr_white_pxs, stopp_crit_plot_figs, val_batch_data_ct,
-                                valid_losses, wasserstein_distance_bw_rendered_idt_reconstr,
+            validation_one_step(USRendereDefParams, cut_trainer, dataloader_real_us_iterator, def_renderer_plot_figs,
+                                epoch, hparams, module, nr, plotter, real_us_train_loader, stopp_crit_plot_figs,
+                                val_batch_data_ct, valid_losses, wasserstein_distance_bw_rendered_idt_reconstr,
                                 wasserstein_distance_bw_rendered_reconstr)
 
         if len(stopp_crit_plot_figs) > 0:
-            plot_stop_criteria_figs(epoch, hparams, plotter, reconstructed_seg_pred_nr_white_pxs,
-                                    rendered_seg_pred_nr_white_pxs, stopp_crit_plot_figs,
+            plot_stop_criteria_figs(epoch, hparams, plotter, stopp_crit_plot_figs,
                                     wasserstein_distance_bw_rendered_idt_reconstr,
                                     wasserstein_distance_bw_rendered_reconstr)
 
         if len(def_renderer_plot_figs) > 0:
             if hparams.logging:
                 plotter.log_image(torchvision.utils.make_grid(def_renderer_plot_figs),
-                                  "default_renderer|labelmap|defaultUS|learnedUS|seg_pred|gt")
+                                  "default_renderer|labelmap|defaultUS|learnedUS")
     # calculate average loss over an epoch
     train_loss = np.average(train_losses)
     valid_loss = np.average(valid_losses)
@@ -360,9 +356,9 @@ def validation_and_stop_check(USRendereDefParams, avg_train_losses, avg_valid_lo
     epoch_len = len(str(hparams.max_epochs))
     print(f'[{epoch:>{epoch_len}}/{hparams.max_epochs:>{epoch_len}}] ' +
           f'pose_train_loss_epoch: {train_loss:.5f} ' +
-          f'seg_valid_loss_epoch: {valid_loss:.5f}')
-    if hparams.logging: wandb.log({"seg_train_loss_epoch": train_loss, "epoch": epoch})
-    if hparams.logging: wandb.log({"seg_val_loss_epoch": valid_loss, "epoch": epoch})
+          f'pose_valid_loss_epoch: {valid_loss:.5f}')
+    if hparams.logging: wandb.log({"pose_train_loss_epoch": train_loss, "epoch": epoch})
+    if hparams.logging: wandb.log({"pose_val_loss_epoch": valid_loss, "epoch": epoch})
     if hparams.logging and not hparams.log_default_renderer: plotter.validation_epoch_end()
     if (epoch > 20):  # hparams.min_epochs):
         early_stopping_best_val(valid_loss, epoch, module, cut_model.netG)
@@ -397,7 +393,7 @@ def validation_and_stop_check(USRendereDefParams, avg_train_losses, avg_valid_lo
             print(f"--------------- INFERENCE: WHOLE TEST US GT IMGS  ------------")
             gt_test_imgs_plot_figs = []
 
-            infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hausdorff_epoch, hparams, module, plotter,
+            infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hparams, module, plotter,
                                 real_us_gt_test_dataloader, testset_losses)
 
         testset_losses = []
@@ -483,14 +479,14 @@ def prepare_for_training(hparams, opt_cut):
     # Initialize early stopping handlers
     early_stopping = EarlyStopping(
         patience=hparams.early_stopping_patience,
-        ckpt_save_path_model1=f'{hparams.output_path}/best_checkpoint_seg_renderer_test_loss_{hparams.exp_name}',
+        ckpt_save_path_model1=f'{hparams.output_path}/best_checkpoint_pose_renderer_test_loss_{hparams.exp_name}',
         ckpt_save_path_model2=f'{hparams.output_path}/best_checkpoint_CUT_test_loss_{hparams.exp_name}',
         verbose=True
     )
 
     early_stopping_best_val = EarlyStopping(
         patience=hparams.early_stopping_patience,
-        ckpt_save_path_model1=f'{hparams.output_path}/best_checkpoint_seg_renderer_valid_loss_{hparams.exp_name}',
+        ckpt_save_path_model1=f'{hparams.output_path}/best_checkpoint_pose_renderer_valid_loss_{hparams.exp_name}',
         ckpt_save_path_model2=f'{hparams.output_path}/best_checkpoint_CUT_val_loss_{hparams.exp_name}',
         verbose=True
     )
@@ -503,7 +499,7 @@ def prepare_for_training(hparams, opt_cut):
     )
 
 
-def infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hausdorff_epoch, hparams, module, plotter,
+def infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hparams, module, plotter,
                         real_us_gt_test_dataloader, testset_losses):
     # Ensure no gradient computation for performance during inference
     with torch.no_grad():
@@ -513,7 +509,7 @@ def infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hausdorff_epoc
                                                 position=0, leave=True):
 
             # Extract images and their labels from the batch data
-            real_us_test_img, real_us_test_img_label = batch_data_real_us_test[0].to(hparams.device), \
+            real_us_test_img, real_label = batch_data_real_us_test[0].to(hparams.device), \
                 batch_data_real_us_test[1].to(hparams.device).float()
 
             # Use the CUT model to reconstruct the US images
@@ -522,8 +518,8 @@ def infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hausdorff_epoc
             # Normalize reconstructed US images from range [-1, 1] to [0, 1]
             reconstructed_us_testset = (reconstructed_us_testset / 2) + 0.5
 
-            # Forward pass through segmentation model
-            testset_loss, seg_pred = module.seg_forward(reconstructed_us_testset, real_us_test_img_label)
+            # Forward pass through pose regression model
+            testset_loss, pose_pred = module.pose_forward(reconstructed_us_testset, real_label)
             testset_losses.append(testset_loss)
 
             # If logging is enabled
@@ -536,38 +532,36 @@ def infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hausdorff_epoc
                     # Normalize real US test images for plotting
                     real_us_test_img = (real_us_test_img / 2) + 0.5  # from [-1,1] to [0,1]
 
-                    # Compute the Hausdorff distance between predictions and labels
-                    hausdorff_metric = HausdorffDistanceMetric()
-                    pred_binary = torch.ge(seg_pred.data, 0.5).float()
-                    hausdorff_dist = hausdorff_metric(y_pred=pred_binary, y=real_us_test_img_label)
+                    # # Compute the Hausdorff distance between predictions and labels # todo: add pose loss
 
-                    # Log the Hausdorff distance
-                    wandb.log({"hausdorff_dist": hausdorff_dist.item()})
-                    hausdorff_epoch.append(hausdorff_dist)
-
-                    # Create a plot with the GT, real US image, reconstructed US, predicted segmentation, and GT label
-                    plot_fig_gt = plotter.plot_stopp_crit(
-                        caption="stestset_gt_|real_us|reconstructed_us|seg_pred|gt_label",
-                        imgs=[real_us_test_img, reconstructed_us_testset, seg_pred, real_us_test_img_label],
-                        img_text='loss=' + "{:.4f}".format(testset_loss.item()), epoch=epoch, plot_single=False)
-                    gt_test_imgs_plot_figs.append(plot_fig_gt)
+                    # Create a plot with the GT, real US image, reconstructed US, predicted pose, and GT pose
+                    gt_label_list = ["{:.4f}".format(value) for value in real_label.cpu().numpy().tolist()[0]]
+                    pred_list = ["{:.4f}".format(value) for value in pose_pred.cpu().numpy().tolist()[0]]
+                    plot_fig = plotter.plot_stopp_crit(
+                        caption="stestset_gt_|real_us|reconstructed_us",
+                        imgs=[real_us_test_img, reconstructed_us_testset],
+                        img_text=f'estimated pose: {",".join(pred_list)}, gt pose: {",".join(gt_label_list)}',
+                        epoch=epoch,
+                        plot_single=False
+                    )
+                    gt_test_imgs_plot_figs.append(plot_fig)
 
         # If we've created any plots, then log them
         if len(gt_test_imgs_plot_figs) > 0:
             plotter.log_image(torchvision.utils.make_grid(gt_test_imgs_plot_figs),
-                              "testset_gt_|real_us|reconstructed_us|seg_pred|gt_label")
+                              "testset_gt_|real_us|reconstructed_us")
 
             # Compute and log statistics about test set loss and Hausdorff distances
             avg_testset_loss = torch.mean(torch.stack(testset_losses))
             std_testset_loss = torch.std(torch.stack(testset_losses))
-            avg_hausdorff_dist = torch.mean(torch.stack(hausdorff_epoch))
-            std_hausdorff = torch.std(torch.stack(hausdorff_epoch))
+            # avg_hausdorff_dist = torch.mean(torch.stack(hausdorff_epoch))
+            # std_hausdorff = torch.std(torch.stack(hausdorff_epoch))
 
             wandb.log({
                 "testset_gt_loss_epoch": avg_testset_loss,
                 "testset_gt_loss_std_epoch": std_testset_loss,
-                "tesset_hausdorff_dist_epoch": avg_hausdorff_dist,
-                "testset_hausdorff_std_epoch": std_hausdorff,
+                # "tesset_hausdorff_dist_epoch": avg_hausdorff_dist,
+                # "testset_hausdorff_std_epoch": std_hausdorff,
                 "epoch": epoch
             })
 
@@ -582,32 +576,28 @@ def check_early_stopping(avg_stopp_crit_loss, cut_model, early_stopping, epoch, 
                                                       total=len(real_us_stopp_crit_dataloader), ncols=100,
                                                       position=0, leave=True):
 
-            real_us_stopp_crit_img, real_us_stopp_crit_label = batch_data_real_us_stopp_crit[0].to(
+            real_us_img, real_us_label = batch_data_real_us_stopp_crit[0].to(
                 hparams.device), batch_data_real_us_stopp_crit[1].to(hparams.device).float()
-            reconstructed_us_stopp_crit = cut_model.netG(real_us_stopp_crit_img)
+            reconstructed_us_stopp_crit = cut_model.netG(real_us_img)
 
             reconstructed_us_stopp_crit = (reconstructed_us_stopp_crit / 2) + 0.5  # from [-1,1] to [0,1]
 
-            stoppcrit_loss, seg_pred_stopp_crit = module.seg_forward(reconstructed_us_stopp_crit,
-                                                                     real_us_stopp_crit_label)
-            # print(f"stop_criterion_loss: {testset_loss.item():.4f}")
-            # if hparams.logging: wandb.log({"stoppcrit_loss": stoppcrit_loss.item()})
-            stoppcrit_losses.append(stoppcrit_loss)
+            stop_crit_loss, pose_pred = module.pose_forward(reconstructed_us_stopp_crit, real_us_label)
+            stoppcrit_losses.append(stop_crit_loss)
 
             if hparams.logging:
-                real_us_stopp_crit_img = (real_us_stopp_crit_img / 2) + 0.5  # from [-1,1] to [0,1]
+                real_us_img = (real_us_img / 2) + 0.5  # from [-1,1] to [0,1]
 
-                wandb.log({"stoppcrit_loss": stoppcrit_loss.item()})
+                wandb.log({"stop_crit_loss": stop_crit_loss.item()})
                 plot_fig_gt = plotter.plot_stopp_crit(
-                    caption="stopp_crit|real_us|reconstructed_us|seg_pred|gt_label",
-                    imgs=[real_us_stopp_crit_img, reconstructed_us_stopp_crit, seg_pred_stopp_crit,
-                          real_us_stopp_crit_label],
-                    img_text='loss=' + "{:.4f}".format(stoppcrit_loss.item()), epoch=epoch,
+                    caption="stopp_crit|real_us|reconstructed_us",
+                    imgs=[real_us_img, reconstructed_us_stopp_crit],
+                    img_text='loss=' + "{:.4f}".format(stop_crit_loss.item()), epoch=epoch,
                     plot_single=False)
                 sopp_crit_imgs_plot_figs.append(plot_fig_gt)
     if len(sopp_crit_imgs_plot_figs) > 0:
         plotter.log_image(torchvision.utils.make_grid(sopp_crit_imgs_plot_figs),
-                          "stopp_crit|real_us|reconstructed_us|seg_pred|gt_label")
+                          "stopp_crit|real_us|reconstructed_us")
         avg_stopp_crit_loss = torch.mean(torch.stack(stoppcrit_losses))
         wandb.log({"stoppcrit_loss_epoch": avg_stopp_crit_loss, "epoch": epoch})
         stoppcrit_losses = []
@@ -622,31 +612,11 @@ def check_early_stopping(avg_stopp_crit_loss, cut_model, early_stopping, epoch, 
         early_stopping(avg_stopp_crit_loss, epoch, module, cut_model.netG)
 
 
-def plot_stop_criteria_figs(epoch, hparams, plotter, reconstructed_seg_pred_nr_white_pxs,
-                            rendered_seg_pred_nr_white_pxs, stopp_crit_plot_figs,
+def plot_stop_criteria_figs(epoch, hparams, plotter, stopp_crit_plot_figs,
                             wasserstein_distance_bw_rendered_idt_reconstr, wasserstein_distance_bw_rendered_reconstr):
     if hparams.logging:
         plotter.log_image(torchvision.utils.make_grid(stopp_crit_plot_figs),
-                          "infer_CUT_during_val_|real_us|reconstructed_us|seg_pred_real|seg_pred_rendered|us_rendered")
-        # avg_seg_pred_mean_diff_mean = torch.mean(seg_pred_mean_diff)
-        # wandb.log({"seg_pred_mean_diff_epoch": avg_seg_pred_mean_diff_mean, "epoch": epoch})
-        # seg_pred_mean_diff = []
-        wandb.log({"reconstructed_seg_pred_nr_white_pxs_mean_epoch": torch.mean(
-            torch.stack(reconstructed_seg_pred_nr_white_pxs)), "epoch": epoch})
-        wandb.log({"reconstructed_seg_pred_nr_white_pxs_std_epoch": torch.std(
-            torch.stack(reconstructed_seg_pred_nr_white_pxs)), "epoch": epoch})
-
-        wandb.log({"rendered_seg_pred_nr_white_pxs_mean_epoch": torch.mean(
-            torch.stack(rendered_seg_pred_nr_white_pxs)), "epoch": epoch})
-        wandb.log({"rendered_seg_pred_nr_white_pxs_std_epoch": torch.std(
-            torch.stack(rendered_seg_pred_nr_white_pxs)), "epoch": epoch})
-
-        wandb.log({"kl_divergence_bw_nr_pxs_epoch": kl_div(
-            torch.stack(reconstructed_seg_pred_nr_white_pxs),
-            torch.stack(rendered_seg_pred_nr_white_pxs)), "epoch": epoch})
-        wandb.log({"wasserstein_distance_bw_nr_pxs_epoch": wasserstein_distance(
-            torch.stack(reconstructed_seg_pred_nr_white_pxs).cpu(),
-            torch.stack(rendered_seg_pred_nr_white_pxs).cpu()), "epoch": epoch})
+                          "infer_CUT_during_val_|real_us|reconstructed_us|us_rendered")
 
         wandb.log({"mean_wasserstein_distance_bw_rendered&reconstr_epoch": np.mean(
             wasserstein_distance_bw_rendered_reconstr), "epoch": epoch})
@@ -654,117 +624,116 @@ def plot_stop_criteria_figs(epoch, hparams, plotter, reconstructed_seg_pred_nr_w
             "mean_wasserstein_distance_bw_rendered_idt&reconstr_epoch": np.mean(
                 wasserstein_distance_bw_rendered_idt_reconstr),
             "epoch": epoch})
-    stopp_crit_plot_figs = []
-    reconstructed_seg_pred_nr_white_pxs = []
-    rendered_seg_pred_nr_white_pxs = []
-    wasserstein_distance_bw_rendered_reconstr = []
-    wasserstein_distance_bw_rendered_idt_reconstr = []
 
 
-def validation_one_step(USRendereDefParams, cut_trainer, dataloader_real_us_iterator, def_renderer_plot_figs, epoch,
-                        hparams, module, nr, plotter, real_us_train_loader, reconstructed_seg_pred_nr_white_pxs,
-                        rendered_seg_pred_nr_white_pxs, stopp_crit_plot_figs, val_batch_data_ct, valid_losses,
-                        wasserstein_distance_bw_rendered_idt_reconstr, wasserstein_distance_bw_rendered_reconstr):
+def validation_one_step(
+        USRendereDefParams,
+        cut_trainer,
+        dataloader_real_us_iterator,
+        def_renderer_plot_figs,
+        epoch,
+        hparams,
+        module,
+        nr,
+        plotter,
+        real_us_train_loader,
+        figs_to_plot,
+        val_batch_data_ct,
+        valid_losses,
+        wasserstein_distance_bw_rendered_idt_reconstr,
+        wasserstein_distance_bw_rendered_reconstr
+):
+    # Extract validation data and label
     val_input, val_label, filename = module.get_data(val_batch_data_ct)
     val_input_copy = val_input.clone().detach()
+
+    idt_B_val, us_sim = plot_validation_result(USRendereDefParams, cut_trainer, def_renderer_plot_figs,
+                                                          epoch, filename, hparams, module, nr, plotter, val_input,
+                                                          val_input_copy, val_label, valid_losses)
+
+    # Check stopping criteria for epochs beyond specified threshold
+    print(f"--------------- INFER UNLABELLED REAL US IMGS FROM CUT TRAIN SET THROUGH THE POSE NET ------------")
+    try:
+        data_cut_real_us = next(dataloader_real_us_iterator)
+    except StopIteration:
+        dataloader_real_us_iterator = iter(real_us_train_loader)
+        data_cut_real_us = next(dataloader_real_us_iterator)
+
+    # Forward pass through CUT model
+    data_cut_real_us_domain_real = data_cut_real_us['A'].to(hparams.device)
+    cut_trainer.forward_cut_A(data_cut_real_us_domain_real)
+    reconstructed_us = cut_trainer.cut_model.fake_B
+    reconstructed_us = (reconstructed_us / 2) + 0.5  # Convert tensor range from [-1,1] to [0,1]
+    _, pose_pred = module.pose_forward(reconstructed_us, torch.zeros_like(val_label))
+
+    wasserstein_distance_bw_rendered_reconstr.append(
+        wasserstein_distance(us_sim.cpu().flatten(), reconstructed_us.cpu().flatten()))
+    if hparams.use_idtB:
+        wasserstein_distance_bw_rendered_idt_reconstr.append(
+            wasserstein_distance(idt_B_val.cpu().flatten(), reconstructed_us.cpu().flatten()))
+
+    if hparams.logging and nr < NR_IMGS_TO_PLOT:
+        no_random_transform = cut_trainer.inference_transformatons()
+        data_cut_real_us_domain_real = no_random_transform(data_cut_real_us_domain_real)
+        data_cut_real_us_domain_real = (data_cut_real_us_domain_real / 2) + 0.5
+
+        pred_list = ["{:.4f}".format(value) for value in pose_pred.cpu().numpy().tolist()[0]]
+        plot_fig = plotter.plot_stopp_crit(
+            caption="infer_CUT_during_val_|real_us|reconstructed_us|us_rendered",
+            imgs=[data_cut_real_us_domain_real, reconstructed_us, us_sim],
+            img_text=f'estimated pose: {",".join(pred_list)}',
+            epoch=epoch,
+            plot_single=False
+        )
+        figs_to_plot.append(plot_fig)
+
+
+def plot_validation_result(USRendereDefParams, cut_trainer, def_renderer_plot_figs, epoch, filename, hparams, module,
+                           nr, plotter, val_input, val_input_copy, val_label, valid_losses):
+    # Determine if to use idtB (Identity Translation from Domain B)
     if hparams.use_idtB:
         us_sim = module.rendering_forward(val_input)
-
         cut_trainer.forward_cut_B(us_sim)
-
         idt_B_val = cut_trainer.cut_model.idt_B
-        # idt_B = idt_B.clone()
-        idt_B_val = (idt_B_val / 2) + 0.5  # from [-1,1] to [0,1]
-
+        idt_B_val = (idt_B_val / 2) + 0.5  # Convert tensor range from [-1,1] to [0,1]
         val_loss_step, pose_pred = module.pose_forward(idt_B_val, val_label)
-        if not hparams.log_default_renderer: dict = module.plot_val_results(val_input,
-                                                                            val_loss_step, filename,
-                                                                            val_label,
-                                                                            pose_pred,
-                                                                            idt_B_val, epoch)
-
+        if not hparams.log_default_renderer:
+            dict_ = module.plot_val_results(val_input, val_loss_step, filename, val_label, pose_pred, idt_B_val, epoch)
     else:
         us_sim = module.rendering_forward(val_input)
+        idt_B_val = us_sim
 
-        if hparams.debug and (
-                hparams.seg_net_input_augmentations_noise_blur):
+        # Apply online augmentations if required
+        if hparams.debug and hparams.net_input_augmentations_noise_blur:
             us_sim, val_label = add_online_augmentations(hparams, us_sim, val_label, module)
 
         val_loss_step, pose_pred = module.pose_forward(us_sim, val_label)
-        if not hparams.log_default_renderer: dict = module.plot_val_results(val_input,
-                                                                            val_loss_step, filename,
-                                                                            val_label,
-                                                                            pose_pred,
-                                                                            us_sim, epoch)
-    # rendered_seg_pred, us_sim, val_loss_step, dict = module.validation_step(val_batch_data_ct, epoch)
-    # print(f"{val_step}/{len(val_dataset_ct_labelmaps) // val_loader_ct_labelmaps.batch_size}, seg_val_loss: {val_loss.item():.4f}")
-    # if hparams.logging: wandb.log({"seg_val_loss_step": val_loss_step.item(), "step": val_step})
+        if not hparams.log_default_renderer:
+            dict_ = module.plot_val_results(val_input, val_loss_step, filename, val_label, pose_pred, us_sim, epoch)
+    # Append current validation loss
     valid_losses.append(val_loss_step.item())
-    # USRendereDefParams.plot_fig(val_label, "val_label", True)
+    # If logging the default renderer and within plotting limits
     if hparams.log_default_renderer and nr < NR_IMGS_TO_PLOT:
         us_sim_def = USRendereDefParams(val_input_copy.squeeze())
-        if not hparams.use_idtB:
-            idt_B_val = us_sim
-        # Convert the tensor to a list
-        val_list = val_label.cpu().numpy().tolist()[0]
-        val_list = ["{:.4f}".format(value) for value in val_list]
-        pred_list = pose_pred.cpu().numpy().tolist()[0]
-        pred_list = ["{:.4f}".format(value) for value in pred_list]
-        plot_fig = plotter.plot_stopp_crit(
-            caption="default_renderer|labelmap|defaultUS|learnedUS|seg_input|seg_pred|gt",
-            imgs=[val_input, us_sim_def, us_sim, idt_B_val],
-            img_text=f'estimated pose: {",".join(pred_list)}, gt pose: {",".join(val_list)}',
-            epoch=epoch,
-            plot_single=False)  # mean_diff=' + "{:.4f}".format(seg_pred_mean_diff.item()), )
+        plot_fig = create_fig(epoch, idt_B_val, plotter, pose_pred, us_sim, us_sim_def, val_input, val_label)
         def_renderer_plot_figs.append(plot_fig)
-    else:
-        plotter.validation_batch_end(dict)
-    # ------------------------------------------------------------------------------------------------------------------------------
-    #                             STOPPING CRITERIA CHECK - infer imgs from CUT train_set through the SEG NET
-    # ------------------------------------------------------------------------------------------------------------------------------
-    if epoch > hparams.epochs_check_stopp_crit and hparams.plot_avg_seg_px_dff:
-        print(f"--------------- INFER UNLABELLED REAL US IMGS FROM CUT TRAIN SET THROUGH THE SEG NET ------------")
-        # cut_model.eval()
-        try:
-            data_cut_real_us = next(dataloader_real_us_iterator)
-        except StopIteration:
-            dataloader_real_us_iterator = iter(real_us_train_loader)
-            data_cut_real_us = next(dataloader_real_us_iterator)
+    elif not hparams.log_default_renderer:
+        plotter.validation_batch_end(dict_)
+    return idt_B_val, us_sim
 
-        data_cut_real_us_domain_real = data_cut_real_us['A'].to(hparams.device)
 
-        cut_trainer.forward_cut_A(data_cut_real_us_domain_real)
-        reconstructed_us = cut_trainer.cut_model.fake_B
-
-        # reconstructed_us = cut_model.netG(data_cut_real_us_domain_real)
-
-        reconstructed_us = (reconstructed_us / 2) + 0.5  # from [-1,1] to [0,1]
-        _, reconstructed_seg_pred = module.seg_forward(reconstructed_us, reconstructed_us)
-
-        # calc the diff bw avg number of white pixels bw the seg predictions of rendered and recoconstructed
-        # seg_pred_mean_diff = torch.abs(torch.mean(reconstructed_seg_pred) - torch.mean(rendered_seg_pred))
-        # avg_seg_pred_mean_diff.append(seg_pred_mean_diff.item())
-
-        reconstructed_seg_pred_nr_white_pxs.append(torch.sum(reconstructed_seg_pred))
-        rendered_seg_pred_nr_white_pxs.append(torch.sum(pose_pred))
-        wasserstein_distance_bw_rendered_reconstr.append(
-            wasserstein_distance(us_sim.cpu().flatten(), reconstructed_us.cpu().flatten()))
-        if hparams.use_idtB: wasserstein_distance_bw_rendered_idt_reconstr.append(
-            wasserstein_distance(idt_B_val.cpu().flatten(), reconstructed_us.cpu().flatten()))
-
-        if hparams.logging and nr < NR_IMGS_TO_PLOT:
-            # wandb.log({"seg_pred_mean_diff": seg_pred_mean_diff.item()})
-            no_random_transform = cut_trainer.inference_transformatons()
-            data_cut_real_us_domain_real = no_random_transform(data_cut_real_us_domain_real)
-            data_cut_real_us_domain_real = (
-                                                   data_cut_real_us_domain_real / 2) + 0.5  # from [-1,1] to [0,1]
-            plot_fig = plotter.plot_stopp_crit(
-                caption="infer_CUT_during_val_|real_us|reconstructed_us|seg_pred_real|seg_pred_rendered|us_rendered",
-                imgs=[data_cut_real_us_domain_real, reconstructed_us, reconstructed_seg_pred,
-                      pose_pred, us_sim],
-                img_text='', epoch=epoch,
-                plot_single=False)  # mean_diff=' + "{:.4f}".format(seg_pred_mean_diff.item()), )
-            stopp_crit_plot_figs.append(plot_fig)
+def create_fig(epoch, idt_B, plotter, pose_pred, us_sim, us_sim_def, img_input, gt_label):
+    # Convert tensor data to formatted strings
+    gt_label_list = ["{:.4f}".format(value) for value in gt_label.cpu().numpy().tolist()[0]]
+    pred_list = ["{:.4f}".format(value) for value in pose_pred.cpu().numpy().tolist()[0]]
+    plot_fig = plotter.plot_stopp_crit(
+        caption="default_renderer|labelmap|defaultUS|learnedUS|idtB",
+        imgs=[img_input, us_sim_def, us_sim, idt_B],
+        img_text=f'estimated pose: {",".join(pred_list)}, gt pose: {",".join(gt_label_list)}',
+        epoch=epoch,
+        plot_single=False
+    )
+    return plot_fig
 
 
 def train_epoch_full_pipeline(cut_trainer, dataloader_real_us_iterator, epoch, epoch_iter, hparams, inner_model,
@@ -853,7 +822,7 @@ def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoc
         # idt_B = idt_B.clone()
         idt_B = (idt_B / 2) + 0.5  # from [-1,1] to [0,1]
 
-        if hparams.seg_net_input_augmentations_noise_blur:
+        if hparams.net_input_augmentations_noise_blur:
             idt_B, label = add_online_augmentations(hparams, idt_B, label, module)
 
         loss, prediction = module.pose_forward(idt_B, label)
@@ -869,7 +838,7 @@ def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoc
         module.optimizer.step()
     else:
         us_sim = module.rendering_forward(input)
-        if hparams.seg_net_input_augmentations_noise_blur:
+        if hparams.net_input_augmentations_noise_blur:
             us_sim, label = add_online_augmentations(hparams, us_sim, label, module)
         loss, prediction = module.pose_forward(us_sim, label)
         # check_gradients(module)
@@ -913,12 +882,14 @@ if __name__ == "__main__":
     opt_cut = CACTUSSEnd2EndOptions().parse()  # get training options
     opt_cut.dataroot = hparams.data_dir_real_us_cut_training
     opt_cut.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if hparams.aorta_only: opt_cut.no_flip = True
+    if hparams.aorta_only:
+        opt_cut.no_flip = True
 
     if hparams.debug:
         hparams.exp_name = 'DEBUG'
     else:
-        hparams.exp_name += str(opt_cut.lr) + '_' + str(hparams.inner_model_learning_rate) + '_' + str(hparams.outer_model_learning_rate)
+        hparams.exp_name += str(opt_cut.lr) + '_' + str(hparams.inner_model_learning_rate) + '_' + str(
+            hparams.outer_model_learning_rate)
 
     # todo: define params to run on slurm cluster
 
@@ -945,6 +916,6 @@ if __name__ == "__main__":
 
     main(opt_cut=opt_cut, hparams=hparams, plotter=plotter, visualizer=visualizer)
 
-
     # load the last checkpoint with the best model
+
     # model.load_state_dict(torch.load('checkpoint.pt'))
