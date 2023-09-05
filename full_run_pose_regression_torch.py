@@ -502,111 +502,77 @@ def prepare_for_training(hparams, opt_cut):
         real_us_train_loader, train_loader_ct_labelmaps, val_loader_ct_labelmaps
     )
 
-#
-# def prepare_for_training(hparams, opt_cut):
-#     # ---------------------
-#     # LOAD MODEL
-#     # ---------------------
-#     cut_model = cut_create_model(opt_cut)  # create a model given opt.model and other options
-#     ModuleClass = load_module(hparams.module)
-#     InnerModelClass = load_model(hparams.inner_model)
-#     inner_model = InnerModelClass(params=hparams)
-#     # InnerModelClass2 = load_model(hparams.inner_model)
-#     USRendereDefParams = UltrasoundRendering(params=hparams, default_param=True).to(hparams.device)
-#     module = ModuleClass(params=hparams, inner_model=inner_model)
-#     # wandb.watch(inner_model, log='all', log_graph=True, log_freq=10)
-#     if hparams.logging:
-#         wandb.watch([inner_model, module.outer_model], log='all', log_graph=True, log_freq=100)
-#     # ---------------------
-#     # LOAD DATA
-#     # ---------------------
-#     CTDatasetLoader = load_dataset(hparams.dataloader_ct_labelmaps)
-#     dataloader = CTDatasetLoader(hparams)
-#     train_loader_ct_labelmaps, train_dataset_ct_labelmaps, val_dataset_ct_labelmaps = dataloader.train_dataloader()
-#     val_loader_ct_labelmaps = dataloader.val_dataloader()
-#     real_us_dataset = cut_create_dataset(opt_cut)  # create a dataset given opt.dataset_mode and other options
-#     RealUSGTDatasetClass = load_dataset(hparams.dataloader_real_us_test)
-#     dataset_real_us = real_us_dataset.dataset
-#     # dataset_size = len(dataset_real_us)    # get the number of images in the dataset.
-#     # train_size = int(0.8 * len(dataset_real_us))
-#     # val_size = len(dataset_real_us) - train_size
-#     # train_dataset_real_us, val_dataset_real_us = random_split(dataset_real_us, [train_size, val_size])#, generator=Generator().manual_seed(0))
-#     real_us_train_loader = torch.utils.data.DataLoader(dataset_real_us, batch_size=opt_cut.batch_size, shuffle=True,
-#                                                        drop_last=True, num_workers=hparams.num_workers)
-#     # real_us_val_loader = torch.utils.data.DataLoader(val_dataset_real_us, batch_size=opt_cut.batch_size, shuffle=False, drop_last=False, num_workers=hparams.num_workers)
-#     real_us_gt_testdataset = RealUSGTDatasetClass(root_dir=hparams.data_dir_real_us_test)
-#     real_us_gt_test_dataloader = torch.utils.data.DataLoader(real_us_gt_testdataset, shuffle=False)
-#     real_us_stopp_crit_dataset = RealUSGTDatasetClass(root_dir=hparams.data_dir_real_us_stopp_crit)
-#     real_us_stopp_crit_dataloader = torch.utils.data.DataLoader(real_us_stopp_crit_dataset, shuffle=False)
-#     cut_trainer = CUTTrainer(opt_cut, cut_model, inner_model, dataset_real_us, real_us_train_loader)
-#     early_stopping = EarlyStopping(patience=hparams.early_stopping_patience,
-#                                    ckpt_save_path_model1=f'{hparams.output_path}/best_checkpoint_seg_renderer_test_loss_{hparams.exp_name}',
-#                                    ckpt_save_path_model2=f'{hparams.output_path}/best_checkpoint_CUT_test_loss_{hparams.exp_name}',
-#                                    verbose=True)
-#     early_stopping_best_val = EarlyStopping(patience=hparams.early_stopping_patience,
-#                                             ckpt_save_path_model1=f'{hparams.output_path}/best_checkpoint_seg_renderer_valid_loss_{hparams.exp_name}',
-#                                             ckpt_save_path_model2=f'{hparams.output_path}/best_checkpoint_CUT_val_loss_{hparams.exp_name}',
-#                                             verbose=True)
-#     return USRendereDefParams, cut_model, cut_trainer, early_stopping, early_stopping_best_val, inner_model, module, real_us_gt_test_dataloader, real_us_stopp_crit_dataloader, real_us_train_loader, train_loader_ct_labelmaps, val_loader_ct_labelmaps
-
 
 def infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hausdorff_epoch, hparams, module, plotter,
                         real_us_gt_test_dataloader, testset_losses):
+    # Ensure no gradient computation for performance during inference
     with torch.no_grad():
+        # Loop over the real US test data
         for nr, batch_data_real_us_test in tqdm(enumerate(real_us_gt_test_dataloader),
                                                 total=len(real_us_gt_test_dataloader), ncols=100,
                                                 position=0, leave=True):
 
+            # Extract images and their labels from the batch data
             real_us_test_img, real_us_test_img_label = batch_data_real_us_test[0].to(hparams.device), \
                 batch_data_real_us_test[1].to(hparams.device).float()
+
+            # Use the CUT model to reconstruct the US images
             reconstructed_us_testset = cut_model.netG(real_us_test_img)
 
-            # reconstructed_us = transforms.functional.hflip(reconstructed_us_testset)
-            # real_us_test_img_label = transforms.functional.hflip(real_us_test_img_label)
+            # Normalize reconstructed US images from range [-1, 1] to [0, 1]
+            reconstructed_us_testset = (reconstructed_us_testset / 2) + 0.5
 
-            reconstructed_us_testset = (reconstructed_us_testset / 2) + 0.5  # from [-1,1] to [0,1]
-
-            # self.fake_B = reconstructed_us_testset[:self.real_A.size(0)] #???
-            # cut_model.forward()
-            # cut_model.compute_visuals()
-            # visuals = cut_model.get_current_visuals()  # get image results   for label, image in visuals.items():
-            # output_cut = visuals['fake_B']
-
+            # Forward pass through segmentation model
             testset_loss, seg_pred = module.seg_forward(reconstructed_us_testset, real_us_test_img_label)
-            # print(f"stop_criterion_loss: {testset_loss.item():.4f}")
-            if hparams.logging: wandb.log({"testset_loss": testset_loss.item()})
             testset_losses.append(testset_loss)
 
-            if hparams.logging and nr < NR_IMGS_TO_PLOT:
-                real_us_test_img = (real_us_test_img / 2) + 0.5  # from [-1,1] to [0,1]
-
+            # If logging is enabled
+            if hparams.logging:
+                # Log the test set loss
                 wandb.log({"testset_loss": testset_loss.item()})
 
-                hausdorff_metric = HausdorffDistanceMetric()
-                pred_binary = torch.ge(seg_pred.data, 0.5).float()
-                hausdorff_dist = hausdorff_metric(y_pred=pred_binary, y=real_us_test_img_label)
+                # If we're still below the max number of images to plot
+                if nr < NR_IMGS_TO_PLOT:
+                    # Normalize real US test images for plotting
+                    real_us_test_img = (real_us_test_img / 2) + 0.5  # from [-1,1] to [0,1]
 
-                wandb.log({"hausdorff_dist": hausdorff_dist.item()})
-                hausdorff_epoch.append(hausdorff_dist)
+                    # Compute the Hausdorff distance between predictions and labels
+                    hausdorff_metric = HausdorffDistanceMetric()
+                    pred_binary = torch.ge(seg_pred.data, 0.5).float()
+                    hausdorff_dist = hausdorff_metric(y_pred=pred_binary, y=real_us_test_img_label)
 
-                plot_fig_gt = plotter.plot_stopp_crit(
-                    caption="stestset_gt_|real_us|reconstructed_us|seg_pred|gt_label",
-                    imgs=[real_us_test_img, reconstructed_us_testset, seg_pred, real_us_test_img_label],
-                    img_text='loss=' + "{:.4f}".format(testset_loss.item()), epoch=epoch, plot_single=False)
-                gt_test_imgs_plot_figs.append(plot_fig_gt)
-    if len(gt_test_imgs_plot_figs) > 0:
-        plotter.log_image(torchvision.utils.make_grid(gt_test_imgs_plot_figs),
-                          "testset_gt_|real_us|reconstructed_us|seg_pred|gt_label")
-        avg_testset_loss = torch.mean(torch.stack(testset_losses))
-        std_testset_loss = torch.std(torch.stack(testset_losses))
-        wandb.log({"testset_gt_loss_epoch": avg_testset_loss, "epoch": epoch})
-        wandb.log({"testset_gt_loss_std_epoch": std_testset_loss, "epoch": epoch})
+                    # Log the Hausdorff distance
+                    wandb.log({"hausdorff_dist": hausdorff_dist.item()})
+                    hausdorff_epoch.append(hausdorff_dist)
 
-        avg_hausdorff_dist = torch.mean(torch.stack(hausdorff_epoch))
-        std_hausdorff = torch.std(torch.stack(hausdorff_epoch))
-        wandb.log({"tesset_hausdorff_dist_epoch": avg_hausdorff_dist, "epoch": epoch})
-        wandb.log({"testset_hausdorff_std_epoch": std_hausdorff, "epoch": epoch})
-        gt_test_imgs_plot_figs = []
+                    # Create a plot with the GT, real US image, reconstructed US, predicted segmentation, and GT label
+                    plot_fig_gt = plotter.plot_stopp_crit(
+                        caption="stestset_gt_|real_us|reconstructed_us|seg_pred|gt_label",
+                        imgs=[real_us_test_img, reconstructed_us_testset, seg_pred, real_us_test_img_label],
+                        img_text='loss=' + "{:.4f}".format(testset_loss.item()), epoch=epoch, plot_single=False)
+                    gt_test_imgs_plot_figs.append(plot_fig_gt)
+
+        # If we've created any plots, then log them
+        if len(gt_test_imgs_plot_figs) > 0:
+            plotter.log_image(torchvision.utils.make_grid(gt_test_imgs_plot_figs),
+                              "testset_gt_|real_us|reconstructed_us|seg_pred|gt_label")
+
+            # Compute and log statistics about test set loss and Hausdorff distances
+            avg_testset_loss = torch.mean(torch.stack(testset_losses))
+            std_testset_loss = torch.std(torch.stack(testset_losses))
+            avg_hausdorff_dist = torch.mean(torch.stack(hausdorff_epoch))
+            std_hausdorff = torch.std(torch.stack(hausdorff_epoch))
+
+            wandb.log({
+                "testset_gt_loss_epoch": avg_testset_loss,
+                "testset_gt_loss_std_epoch": std_testset_loss,
+                "tesset_hausdorff_dist_epoch": avg_hausdorff_dist,
+                "testset_hausdorff_std_epoch": std_hausdorff,
+                "epoch": epoch
+            })
+
+            # Clear the list of plots
+            gt_test_imgs_plot_figs = []
 
 
 def check_early_stopping(avg_stopp_crit_loss, cut_model, early_stopping, epoch, hparams, module, plotter,
@@ -619,9 +585,6 @@ def check_early_stopping(avg_stopp_crit_loss, cut_model, early_stopping, epoch, 
             real_us_stopp_crit_img, real_us_stopp_crit_label = batch_data_real_us_stopp_crit[0].to(
                 hparams.device), batch_data_real_us_stopp_crit[1].to(hparams.device).float()
             reconstructed_us_stopp_crit = cut_model.netG(real_us_stopp_crit_img)
-
-            # reconstructed_us = transforms.functional.hflip(reconstructed_us_testset)
-            # real_us_test_img_label = transforms.functional.hflip(real_us_test_img_label)
 
             reconstructed_us_stopp_crit = (reconstructed_us_stopp_crit / 2) + 0.5  # from [-1,1] to [0,1]
 
@@ -957,7 +920,7 @@ if __name__ == "__main__":
     else:
         hparams.exp_name += str(opt_cut.lr) + '_' + str(hparams.inner_model_learning_rate) + '_' + str(hparams.outer_model_learning_rate)
 
-    # todo: define params to run on cluster
+    # todo: define params to run on slurm cluster
 
     hparams.exp_name = str(random.randint(0, 1000)) + "_" + hparams.exp_name
 

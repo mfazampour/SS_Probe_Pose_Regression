@@ -38,7 +38,7 @@ class SingleDataset(BaseDataset):
         A_img = T.ToTensor()(A_img)
         # A_img = T.Grayscale()(A_img)
 
-        # A = self.transform(A_img)
+        A_img = self.transform(A_img)
         return {'A': A_img, 'A_paths': A_path}
 
     def __len__(self):
