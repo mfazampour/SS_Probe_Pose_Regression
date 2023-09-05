@@ -31,6 +31,57 @@ def check_gradients(net):
             sys.exit()
 
 
+def training_loop_pose_net(hparams, module, inner_model, batch_size, train_loader, train_losses, plotter):
+    step = 0
+    batch_loss_list = []
+    if batch_size == 1:
+        for batch_data in tqdm(train_loader, total=len(train_loader), ncols=100):
+            step += 1
+
+            # loss, _ = module.training_step(batch_data)
+            # input, label = module.get_data(batch_data)
+            module.optimizer.zero_grad()
+
+            input, label = module.get_data(batch_data)
+            loss, prediction = module.pose_forward(input, label)
+
+            check_gradients(module)
+            loss.backward()
+            # log_model_gradients(inner_model, step)
+            module.optimizer.step()
+            # batch_loss_list =[]
+
+            print(f"{step}/{len(train_loader.dataset) // train_loader.batch_size}, train_loss: {loss.item():.4f}")
+            if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
+            train_losses.append(loss.item())
+
+            plotter.log_us_rendering_values(inner_model, step)
+
+    else:
+        dataloader_iterator = iter(train_loader)
+        while step < len(train_loader):
+            step += 1
+            module.optimizer.zero_grad()
+            # while step % hparams.batch_size_manual != 0 :
+            while step % batch_size != 0:
+                data = next(dataloader_iterator)
+
+                input, label = module.get_data(data)
+                loss, prediction = module.pose_forward(input, label)
+                batch_loss_list.append(loss)
+                step += 1
+                if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
+                train_losses.append(loss.item())
+
+            loss = torch.mean(torch.stack(batch_loss_list))
+
+            check_gradients(module)
+            loss.backward()
+            module.optimizer.step()
+            batch_loss_list = []
+
+            print(f"{step}/{len(train_loader.dataset) // train_loader.batch_size}, train_loss: {loss.item():.4f}")
+            plotter.log_us_rendering_values(inner_model, step)
 
 
 def training_loop_seg_net(hparams, module, inner_model, batch_size, train_loader, train_losses,plotter):

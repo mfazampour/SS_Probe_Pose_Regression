@@ -41,9 +41,6 @@ class PoseRegressionSim(torch.nn.Module):
         if params.seg_net_input_augmentations_noise_blur:  # todo: change the names later
             print(self.rendered_img_random_transf)
 
-        if params.seg_net_input_augmentations_rand_crop:  # todo: change the names later
-            print(self.rendered_img_masks_random_transf)
-
         # if params.outer_model_monai:
         #     # channels = (16, 32, 64, 128, 256)
         #     # channels = (64, 128, 256, 512, 1024)

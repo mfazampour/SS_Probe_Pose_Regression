@@ -11,6 +11,7 @@ from PIL import Image
 import SimpleITK as sitk
 
 from datasets.imfusion_free_slicing.ultrasound_fan import create_ultrasound_mask
+from datasets.real_us_pose_dataset_with_gt_torch import get_center_pose
 
 ''' This data loader is designed to read a batch file originally created for ImFusion. Each row in the batch file has the following format:
     "volume path", "transducer spline", "direction spline", "output path"
@@ -22,6 +23,45 @@ SIZE_W = 512
 SIZE_H = 512
 
 
+def get_image_center_pose_as_quat(image_path, relative_to=None):
+    """
+    Get the 6D pose of the center of a NIfTI image.
+
+    Parameters:
+    - image_path: str, path to the .nii.gz image.
+
+    Returns:
+    - center_position: tuple, (x, y, z) coordinates of the center.
+    - quaternion: array, orientation of the center in quaternion format [x, y, z, w].
+    """
+
+    # Read the NIfTI image
+    image = sitk.ReadImage(image_path)
+
+    # # 3D position of the center
+    # center_pixel = [s // 2 for s in image.GetSize()]
+    # center_position = image.TransformContinuousIndexToPhysicalPoint(center_pixel)
+    #
+    # # 3D orientation from the direction matrix
+    # direction = np.array(image.GetDirection()).reshape((3, 3))
+
+    affine = get_center_pose(image)
+
+    if relative_to is not None:
+        # relative_to is the pose of the reference volume
+        # Convert the pose to the reference volume coordinate system
+        affine = np.linalg.inv(relative_to) @ affine
+
+    center_position = affine[:3, 3]
+    direction = affine[:3, :3]
+
+    # Convert the direction matrix to a quaternion
+    rotation = Rotation.from_matrix(direction)
+    quaternion = rotation.as_quat()
+
+    return center_position, quaternion
+
+
 class CT3DLabelmapPoseDataset(Dataset):
     def __init__(self, params):
         self.params = params
@@ -29,13 +69,33 @@ class CT3DLabelmapPoseDataset(Dataset):
 
         self.base_folder_data_imgs = params.base_folder_data_path
 
-        # search for all .nii.gz files in the base folder recursively
         self.total_slices = []
-        for root, dirs, files in os.walk(self.base_folder_data_imgs):
-            for file in files:
-                if file.endswith('.nii.gz') and "slice" in file:
-                    self.total_slices.append(os.path.join(root, file))
-        self.total_slices = sorted(self.total_slices)
+        # Find subfolders matching the pattern "CT*"
+        for dir_name, subdirs, _ in os.walk(self.base_folder_data_imgs):
+            for subdir in filter(lambda d: d.startswith('CT'), subdirs):
+                subdir_path = os.path.join(dir_name, subdir)
+
+                # Read the "whole_volume.nii.gz" using SimpleITK
+                volume_path = os.path.join(subdir_path, 'whole_volume.nii.gz')
+                if os.path.exists(volume_path):
+                    volume = sitk.ReadImage(volume_path)
+                    print(f"Read CT volume from: {volume_path}")
+                    center_pose = get_center_pose(volume)
+                else:
+                    print(f"Could not find volume at: {volume_path}")
+                    continue
+
+                # List all ".nii.gz" files in the "slices" folder
+                slices_dir = os.path.join(subdir_path, 'slices')
+                if os.path.exists(slices_dir):
+                    sub_slice_dirs = [f for f in os.listdir(slices_dir) if "slices" in f]
+
+                    for dir_ in sub_slice_dirs:
+                        abs_ = os.path.join(slices_dir, dir_)
+                        slice_files = [f for f in os.listdir(abs_) if f.endswith('.nii.gz')]
+                        for s in slice_files:
+                            slice_path = os.path.join(abs_, s)
+                            self.total_slices.append((slice_path, center_pose))
 
         # create the ultrasound mask
         origin = (106, 246)
@@ -83,37 +143,9 @@ class CT3DLabelmapPoseDataset(Dataset):
 
         return img  # .astype('float64')
 
-    def get_image_center_pose(self, image_path):
-        """
-        Get the 6D pose of the center of a NIfTI image.
-
-        Parameters:
-        - image_path: str, path to the .nii.gz image.
-
-        Returns:
-        - center_position: tuple, (x, y, z) coordinates of the center.
-        - quaternion: array, orientation of the center in quaternion format [x, y, z, w].
-        """
-
-        # Read the NIfTI image
-        image = sitk.ReadImage(image_path)
-
-        # 3D position of the center
-        center_pixel = [s // 2 for s in image.GetSize()]
-        center_position = image.TransformContinuousIndexToPhysicalPoint(center_pixel)
-
-        # 3D orientation from the direction matrix
-        direction = np.array(image.GetDirection()).reshape((3, 3))
-
-        # Convert the direction matrix to a quaternion
-        rotation = Rotation.from_matrix(direction)
-        quaternion = rotation.as_quat()
-
-        return center_position, quaternion
-
     def __getitem__(self, idx):
 
-        vol_path = self.total_slices[idx]
+        vol_path, ref_center_pose = self.total_slices[idx]
         slice_data = sitk.ReadImage(vol_path)
         slice_data = sitk.GetArrayFromImage(slice_data)
         slice_data = slice_data.transpose(1, 2, 0)
@@ -136,7 +168,7 @@ class CT3DLabelmapPoseDataset(Dataset):
         us_mask = transforms.ToTensor()(self.us_mask)
         us_mask = torch.where(us_mask > 0, 1, 0)
 
-        position, quat = self.get_image_center_pose(vol_path)
+        position, quat = get_image_center_pose_as_quat(vol_path, relative_to=ref_center_pose)  # todo: get the relative pose to the center of the volume
 
         pose = np.concatenate((position, quat)).astype(np.float32)
 

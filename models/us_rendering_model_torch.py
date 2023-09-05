@@ -328,7 +328,6 @@ class UltrasoundRendering(torch.nn.Module):
                     grid = torch.tensor([[[[col, row]]]]).float().to('cuda')  # Add batch dimension to grid
                     resultImage[0, r, c] = F.grid_sample(inputImage, grid, mode='bilinear')
         resultImage = resultImage * torch.transpose(mask, 0, 1)  # Apply mask to result image
-        resultImage_resized = F.resize(resultImage.unsqueeze(0).float(), (256, 256)).float()
         resultImage_resized = transforms.Resize((256,256))(resultImage).float().squeeze()
 
         return resultImage_resized
@@ -368,7 +367,6 @@ class UltrasoundRendering(torch.nn.Module):
                         resultImage[0, r, c] = torch.tensor(interpolated(origCol, origRow))
 
         resultImage_resized = transforms.Resize((256,256))(resultImage).float().squeeze()
-        # resultImage_resized = F.resize(resultImage.unsqueeze(0), (256, 256)).float()
         self.plot_fig(resultImage_resized, "resultImage_resized", True)
 
         return resultImage_resized

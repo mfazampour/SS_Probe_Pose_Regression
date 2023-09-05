@@ -16,21 +16,11 @@ dataloader_ct_labelmaps : ct_3d_labemaps_pose_dataset_torch.CT3DLabelmapPoseData
 #dataloader_real_us : real_us_dataset_torch.RealUSDataLoader
 dataloader_real_us_test : real_us_pose_dataset_with_gt_torch.PoseRegressionDataset
 
-n_classes : 1
-pred_label : 4    # 4-vessel, 6-kidney, 10 - catheter, 11-liver
-
 module : poseRegressionEfficientNetSim_torch.PoseRegressionSim
 
-outer_model_monai : False
-
-# outer_model_github : True
-# outer_model : unet_2d_github.UNet
-
-outer_model : unet_2d.OriginalUNet
 dropout: False
 dropout_ratio : 0.0
 seg_net_input_augmentations_noise_blur : True
-seg_net_input_augmentations_rand_crop : True  # todo: remove or change
 
 inner_model : us_rendering_model_torch.UltrasoundRendering
 cactuss_mode : False

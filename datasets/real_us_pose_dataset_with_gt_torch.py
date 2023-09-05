@@ -12,6 +12,22 @@ import SimpleITK as sitk
 import numpy as np
 
 
+def get_center_pose(image):
+    # Find the physical center of the volume
+    size = image.GetSize()
+    center_pixel = [sz // 2 for sz in size]
+    center_physical = image.TransformContinuousIndexToPhysicalPoint(center_pixel)
+
+    # Extract the rotation matrix from the direction cosines
+    rotation_matrix = np.array(image.GetDirection()).reshape((3, 3))
+
+    affine = np.eye(4)
+    affine[:3, :3] = rotation_matrix
+    affine[:3, 3] = center_physical
+
+    return affine
+
+
 class PoseRegressionDataset(Dataset):
     def __init__(self, root_dir, transform=None):
 
@@ -43,25 +59,10 @@ class PoseRegressionDataset(Dataset):
         # self.ct_image = tio.LabelMap(ct_image_path)
         # self.ct_image.load()
 
-        # Preprocessing for grayscale images (resize not included as it will depend on your specific needs)
+        # Preprocessing for grayscale images (resize not included as it will depend on your specific needs)  # todo: resize
         self.preprocess = transforms.Compose([
             transforms.ToTensor(),
         ])
-
-    def get_center_pose(self, image):
-        # Find the physical center of the volume
-        size = image.GetSize()
-        center_pixel = [sz // 2 for sz in size]
-        center_physical = image.TransformContinuousIndexToPhysicalPoint(center_pixel)
-
-        # Extract the rotation matrix from the direction cosines
-        rotation_matrix = np.array(image.GetDirection()).reshape((3, 3))
-
-        affine = np.eye(4)
-        affine[:3, :3] = rotation_matrix
-        affine[:3, 3] = center_physical
-
-        return affine
 
     def calculate_relative_pose(self, us_pose):
         # Reshape the flattened 4x4 matrix
@@ -69,7 +70,7 @@ class PoseRegressionDataset(Dataset):
         # ct_pose = torch.tensor(self.ct_image.affine, dtype=torch.double) # Assuming the CT pose is stored in the affine attribute
 
         # find the pose of the center of the CT
-        ct_center_pose = torch.tensor(self.get_center_pose(self.ct_image)).double()
+        ct_center_pose = torch.tensor(get_center_pose(self.ct_image)).double()
 
         # Compute the relative pose as a matrix multiplication between the inverse CT pose and the US pose
         relative_pose = torch.inverse(ct_center_pose) @ us_pose
