@@ -4,6 +4,7 @@ import pandas as pd
 import os
 import torch
 from PIL import Image
+from scipy.spatial.transform import Rotation
 from torch.utils.data import Dataset, random_split
 from torchvision import transforms
 import torchio as tio
@@ -29,7 +30,7 @@ def get_center_pose(image):
 
 
 class PoseRegressionDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
+    def __init__(self, root_dir, transform=None, img_size=(512, 512)):
 
         # the root directory
         self.root_dir = root_dir
@@ -43,7 +44,7 @@ class PoseRegressionDataset(Dataset):
         # the 3d image path
         self.ct_image_path = os.path.join(self.root_dir, 'ct_seg.mhd')
 
-        self.poses = pd.read_csv(self.csv_file, sep='\t')
+        self.poses = pd.read_csv(self.csv_file, sep='\t', header=None)
 
         self.us_image_dir = os.path.abspath(self.us_image_dir)
         # read all png images in us_image_dir
@@ -61,6 +62,7 @@ class PoseRegressionDataset(Dataset):
 
         # Preprocessing for grayscale images (resize not included as it will depend on your specific needs)  # todo: resize
         self.preprocess = transforms.Compose([
+            transforms.Resize(img_size),
             transforms.ToTensor(),
         ])
 
@@ -79,11 +81,12 @@ class PoseRegressionDataset(Dataset):
         rotation_matrix = relative_pose[:3, :3]
         translation_vector = relative_pose[:3, 3]
 
-        # Convert the rotation matrix to a quaternion
-        quaternion = conversions.rotation_matrix_to_quaternion(rotation_matrix)
+        # Convert the rotation_matrix to a quaternion
+        rotation = Rotation.from_matrix(rotation_matrix)
+        quaternion = rotation.as_quat()
 
         # Concatenate the quaternion and translation to form the final pose representation
-        final_pose = torch.cat([quaternion, translation_vector])
+        final_pose = torch.cat([translation_vector, torch.tensor(quaternion).double()])
 
         return final_pose.float()
 

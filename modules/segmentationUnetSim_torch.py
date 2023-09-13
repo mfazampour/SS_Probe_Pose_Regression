@@ -20,7 +20,7 @@ class SegmentationSim(torch.nn.Module):
         self.params = params
 
         # negative_penalty = negative_alpha * torch.sum(torch.nn.functional.relu(-1 * input))
-        self.USRenderingModel = inner_model.to(params.device)
+        self.USRenderingModel = inner_model
 
         #define transforms for image and segmentation
         self.rendered_img_masks_random_transf = transforms.Compose([

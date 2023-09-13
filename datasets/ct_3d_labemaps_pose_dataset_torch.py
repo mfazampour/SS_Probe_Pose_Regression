@@ -95,7 +95,8 @@ class CT3DLabelmapPoseDataset(Dataset):
                         slice_files = [f for f in os.listdir(abs_) if f.endswith('.nii.gz')]
                         for s in slice_files:
                             slice_path = os.path.join(abs_, s)
-                            self.total_slices.append((slice_path, center_pose))
+                            self.total_slices.append((slice_path, center_pose, volume))
+                break
 
         # create the ultrasound mask
         origin = (106, 246)
@@ -114,7 +115,7 @@ class CT3DLabelmapPoseDataset(Dataset):
 
     def __len__(self):
         if self.params.debug:
-            return self.total_slices.__len__() // 500  # for debugging
+            return self.total_slices.__len__() // 100  # for debugging
         else:
             return self.total_slices.__len__()
 
@@ -144,8 +145,8 @@ class CT3DLabelmapPoseDataset(Dataset):
         return img  # .astype('float64')
 
     def __getitem__(self, idx):
-
-        vol_path, ref_center_pose = self.total_slices[idx]
+        volume: sitk.Image = None
+        vol_path, ref_center_pose, volume = self.total_slices[idx]
         slice_data = sitk.ReadImage(vol_path)
         slice_data = sitk.GetArrayFromImage(slice_data)
         slice_data = slice_data.transpose(1, 2, 0)
@@ -165,14 +166,14 @@ class CT3DLabelmapPoseDataset(Dataset):
         labelmap_slice = self.transform_img(labelmap_slice)
         torch.set_rng_state(state)
 
-        us_mask = transforms.ToTensor()(self.us_mask)
-        us_mask = torch.where(us_mask > 0, 1, 0)
+        # us_mask = transforms.ToTensor()(self.us_mask)
+        # us_mask = torch.where(us_mask > 0, 1, 0)
 
         position, quat = get_image_center_pose_as_quat(vol_path, relative_to=ref_center_pose)  # todo: get the relative pose to the center of the volume
 
         pose = np.concatenate((position, quat)).astype(np.float32)
 
-        return labelmap_slice, pose, vol_path
+        return labelmap_slice, pose, vol_path, sitk.GetArrayFromImage(volume), volume.GetSpacing(), volume.GetDirection(), volume.GetOrigin()
 
 
 class CT3DLabelmapPoseDataLoader():

@@ -53,6 +53,67 @@ g_kernel = torch.tensor(g_kernel[None, None, :, :], dtype=torch.float32).to(devi
 #g_kernel = torch.tensor(g_kernel[:, :, None, None], dtype=torch.float32).to(device='cuda')
 
 
+def warp_img2(inputImage):
+
+    resultWidth = 360
+    resultHeight = 220
+    centerX = resultWidth / 2
+    centerY = -120.0
+    maxAngle =  60.0 / 2 / 180 * pi #rad
+    minAngle = -maxAngle
+    minRadius = 140.0
+    maxRadius = 340.0
+
+    h, w = inputImage.squeeze().shape
+
+    # Create x and y grids
+    x = torch.arange(resultWidth).float() - centerX
+    y = torch.arange(resultHeight).float() - centerY
+    xx, yy = torch.meshgrid(x, y)
+
+    # Calculate angle and radius
+    angle = torch.atan2(xx, yy)
+    radius = torch.sqrt(xx ** 2 + yy ** 2)
+
+    # Create masks for angle and radius
+    angle_mask = (angle > minAngle) & (angle < maxAngle)
+    radius_mask = (radius > minRadius) & (radius < maxRadius)
+
+    # Calculate original column and row
+    origCol = (angle - minAngle) / (maxAngle - minAngle) * w
+    origRow = (radius - minRadius) / (maxRadius - minRadius) * h
+
+    # Reshape input image to be a batch of 1 image
+    inputImage = inputImage.float().unsqueeze(0).unsqueeze(0)
+
+    # Scale original column and row to be in the range [-1, 1]
+    origCol = origCol / (w - 1) * 2 - 1
+    origRow = origRow / (h - 1) * 2 - 1
+
+    # Transpose input image to have channels first
+    inputImage = inputImage.permute(0, 1, 3, 2)
+
+    # Use grid_sample to interpolate
+    # resultImage = F.grid_sample(inputImage, torch.stack([origCol, origRow], dim=-1), mode='bilinear', align_corners=True)
+    grid = torch.stack([origCol, origRow], dim=-1).unsqueeze(0).to('cuda')
+    resultImage = F.grid_sample(inputImage, grid, mode='bilinear', align_corners=True)
+
+    # self.plot_fig(resultImage.squeeze(), "resultImage_resized", True)
+
+    resultImage_resized = transforms.Resize((256,256))(resultImage).float().squeeze()
+
+    # self.plot_fig(resultImage_resized.squeeze(), "resultImage_resized", True)
+
+
+    # Transpose output image to have channels last
+    #resultImage = resultImage.permute(0, 1, 3, 2)
+
+    # Apply masks and set values outside of mask to 0
+    # resultImage[~(angle_mask.unsqueeze(0).unsqueeze(0) & radius_mask.unsqueeze(0).unsqueeze(0))] = 0.0
+
+    return resultImage_resized
+
+
 class UltrasoundRendering(torch.nn.Module):
     def __init__(self, params, default_param=False):
         super(UltrasoundRendering, self).__init__()
@@ -371,72 +432,6 @@ class UltrasoundRendering(torch.nn.Module):
 
         return resultImage_resized
 
-    def warp_img2(self, inputImage):
-
-        resultWidth = 360
-        resultHeight = 220
-        centerX = resultWidth / 2
-        centerY = -120.0
-        maxAngle =  60.0 / 2 / 180 * pi #rad
-        minAngle = -maxAngle
-        minRadius = 140.0
-        maxRadius = 340.0
-        
-        h, w = inputImage.squeeze().shape
-
-        import torch.nn.functional as F
-
-        # Create x and y grids
-        x = torch.arange(resultWidth).float() - centerX
-        y = torch.arange(resultHeight).float() - centerY
-        xx, yy = torch.meshgrid(x, y)
-
-        # Calculate angle and radius
-        angle = torch.atan2(xx, yy)
-        radius = torch.sqrt(xx ** 2 + yy ** 2)
-
-        # Create masks for angle and radius
-        angle_mask = (angle > minAngle) & (angle < maxAngle)
-        radius_mask = (radius > minRadius) & (radius < maxRadius)
-
-        # Calculate original column and row
-        origCol = (angle - minAngle) / (maxAngle - minAngle) * w
-        origRow = (radius - minRadius) / (maxRadius - minRadius) * h
-
-        # Reshape input image to be a batch of 1 image
-        inputImage = inputImage.float().unsqueeze(0).unsqueeze(0)
-
-        # Scale original column and row to be in the range [-1, 1]
-        origCol = origCol / (w - 1) * 2 - 1
-        origRow = origRow / (h - 1) * 2 - 1
-
-        # Transpose input image to have channels first
-        inputImage = inputImage.permute(0, 1, 3, 2)
-
-        # Use grid_sample to interpolate
-        # resultImage = F.grid_sample(inputImage, torch.stack([origCol, origRow], dim=-1), mode='bilinear', align_corners=True)
-        grid = torch.stack([origCol, origRow], dim=-1).unsqueeze(0).to('cuda')
-        resultImage = F.grid_sample(inputImage, grid, mode='bilinear', align_corners=True)
-
-        # self.plot_fig(resultImage.squeeze(), "resultImage_resized", True)
-
-        resultImage_resized = transforms.Resize((256,256))(resultImage).float().squeeze()
-
-        # self.plot_fig(resultImage_resized.squeeze(), "resultImage_resized", True)
-
-
-        # Transpose output image to have channels last
-        #resultImage = resultImage.permute(0, 1, 3, 2)
-
-        # Apply masks and set values outside of mask to 0
-        # resultImage[~(angle_mask.unsqueeze(0).unsqueeze(0) & radius_mask.unsqueeze(0).unsqueeze(0))] = 0.0
-
-        return resultImage_resized
-
-
-
-
-
     def normalize(self, img):
         return (img - torch.min(img)) / (torch.max(img) - torch.min(img))
 
@@ -533,7 +528,7 @@ class UltrasoundRendering(torch.nn.Module):
         if self.params.warp_img: 
             #intensity_map_rot = torch.rot90(intensity_map, 3, [0, 1])
             # resultImage_resized = self.warp_img(intensity_map_rot)
-            intensity_map_masked = self.warp_img2(intensity_map)
+            intensity_map_masked = warp_img2(intensity_map)
             intensity_map_masked = torch.rot90(intensity_map_masked, 3)
 
             # resultImage_resized = self.warp_img_torch(intensity_map_rot)

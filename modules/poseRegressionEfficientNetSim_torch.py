@@ -5,17 +5,60 @@ import torchvision.transforms.functional as F
 import torchvision.transforms as transforms
 from PIL import Image
 import monai
+import SimpleITK as sitk
+import matplotlib.pyplot as plt
+from scipy.spatial.transform import Rotation
+from skimage.transform import resize
+from kornia.filters.median import MedianBlur
 from torch import nn
-
-from Losses.losses import SoftDiceLoss, DiceLoss
 from utils.helpers import AddGaussianNoise
 from models.unet_2d_github import dice_loss
 from torch.optim.lr_scheduler import StepLR
+
+from datasets.imfusion_free_slicing.slice_volume import interpolate_arbitrary_plane
+from datasets.imfusion_free_slicing.ultrasound_fan import create_ultrasound_mask
+from datasets.real_us_pose_dataset_with_gt_torch import get_center_pose
+from models.us_rendering_model_torch import warp_img2
+from Losses.pytorch_similarity.torch_similarity.modules.gradient_correlation_loss import GradientCorrelationLoss2d, \
+    GradientCorrelation2d
 
 # torch.set_printoptions(profile="full")
 THRESHOLD = 0.5
 SIZE_W = 256
 SIZE_H = 256
+
+# Constants
+ORIGIN = (106, 246)
+OPENING_ANGLE = 70  # in degrees
+SHORT_RADIUS = 124  # in pixels
+LONG_RADIUS = 512  # in pixels
+IMG_SHAPE = (512, 512)
+US_SPACING = (0.4, 0.4)  # in mm
+SLICED_IMG_SHAPE = (int(IMG_SHAPE[0] * 1.2 * US_SPACING[0]), int(IMG_SHAPE[1] * 1.2 * US_SPACING[1]))
+
+
+def lcc_loss(I, J, window_size=5):
+    assert I.shape == J.shape, "Input images must have the same shape"
+
+    # Define the local window
+    window = torch.ones((1, 1, window_size, window_size)) / (window_size ** 2)
+    window = window.to(I.device)
+
+    # Compute local means of I and J
+    I_mean = torch.nn.functional.conv2d(I, window, padding=window_size // 2)
+    J_mean = torch.nn.functional.conv2d(J, window, padding=window_size // 2)
+
+    # Compute cross-correlation numerator
+    cross_corr = torch.nn.functional.conv2d(I * J, window, padding=window_size // 2) - (I_mean * J_mean)
+
+    # Compute the denominators
+    I_var = torch.nn.functional.conv2d(I * I, window, padding=window_size // 2) - (I_mean * I_mean)
+    J_var = torch.nn.functional.conv2d(J * J, window, padding=window_size // 2) - (J_mean * J_mean)
+
+    lcc = cross_corr / (torch.sqrt((I_var * J_var).abs()) + 1e-5)
+
+    # Here, we're taking the negative mean to treat it as a loss (the closer lcc is to 1, the better)
+    return -torch.mean(lcc)
 
 
 class PoseRegressionSim(torch.nn.Module):
@@ -41,39 +84,19 @@ class PoseRegressionSim(torch.nn.Module):
         if params.net_input_augmentations_noise_blur:  # todo: change the names later
             print(self.rendered_img_random_transf)
 
-        # if params.outer_model_monai:
-        #     # channels = (16, 32, 64, 128, 256)
-        #     # channels = (64, 128, 256, 512, 1024)
-        #     channels = (32, 64, 128, 256, 512)
-        #     print('MONAI channels: ', channels, 'DROPOUT: ', params.dropout_ratio)
-        #     self.outer_model = monai.networks.nets.UNet(
-        #         spatial_dims=2,
-        #         in_channels=1,
-        #         out_channels=1,
-        #         channels=channels,
-        #         strides=(2, 2, 2, 2),
-        #         num_res_units=2,
-        #         dropout = params.dropout_ratio
-        #     ).to(params.device)
-        #
-        #     self.loss_function = monai.losses.DiceLoss(sigmoid=True)
-        #
-        # elif self.params.outer_model_github:
-        #     self.outer_model = outer_model.to(params.device)
-        # else:
-        #     self.outer_model = outer_model.to(params.device)
-        #     self.loss_function = SoftDiceLoss()  # without thresholding is soft DICE loss
-        #     # self.loss_function = DiceLoss()     #default threshold is 0.5
-
         self.outer_model = PoseRegressionNet().to(params.device)
 
+        self.gradient_correlation_loss = GradientCorrelationLoss2d(gauss_sigma=None).to(params.device)
+        self.gradient_correlation = GradientCorrelation2d().to(params.device)
+        self.median_blur = MedianBlur(9)
+
         # translation normalization coeff
-        self.translation_normalization_coeff = np.array((SIZE_W, SIZE_H)).mean() / 2
+        self.translation_normalization_coeff = np.array((SIZE_W, SIZE_H)).mean() / 20
 
         self.optimizer, self.scheduler = self.configure_optimizers(self.USRenderingModel, self.outer_model)
         # self.optimizer = self.configure_optimizers(self.USRenderingModel, self.outer_model)
 
-        self.loss_function = self.pose_loss
+        # self.loss_function = self.pose_loss
 
         print(f'OuterModel On cuda?: ', next(self.outer_model.parameters()).is_cuda)
         print('USRenderingModel On cuda?: ', next(self.USRenderingModel.parameters()).is_cuda)
@@ -88,12 +111,13 @@ class PoseRegressionSim(torch.nn.Module):
         return angle.mean()
 
     def pose_loss(self, predicted_poses, gt_poses):
-        normalized_rot = torch.nn.functional.normalize(predicted_poses[:, :4], p=2, dim=1)
-        loss_rot = self.geodesic_loss(normalized_rot, gt_poses[:, :4])
-        loss_trans = torch.nn.functional.mse_loss(predicted_poses[:, 4:], gt_poses[:, 4:] / self.translation_normalization_coeff)
-        loss = loss_rot + loss_trans
+        normalized_rot = torch.nn.functional.normalize(predicted_poses[:, -4:], p=2, dim=1)
+        loss_rot = self.geodesic_loss(normalized_rot, gt_poses[:, -4:])
+        loss_trans = torch.nn.functional.mse_loss(predicted_poses[:, :3],
+                                                  gt_poses[:, :3] / self.translation_normalization_coeff)
+        losses = {'loss_rot': loss_rot, 'loss_trans': loss_trans}
         # self.log('train_loss', loss, on_step=True, on_epoch=True)  # todo: add logging later
-        return loss
+        return losses
 
     def normalize(self, img):
         return (img - torch.min(img)) / (torch.max(img) - torch.min(img))
@@ -116,26 +140,120 @@ class PoseRegressionSim(torch.nn.Module):
 
         return us_sim_resized
 
-
-    def pose_forward(self, us_sim, pose_gt):
+    def pose_forward(self, us_sim, pose_gt, slice_volume=False, volume_data=None, spacing=None, direction=None,
+                     origin=None, us_sim_orig=None):
         output = self.outer_model.forward(us_sim)
-        loss = self.loss_function(output, pose_gt)
+        losses = self.pose_loss(output, pose_gt)
+
+        if slice_volume:
+            ct_volume = sitk.GetImageFromArray(volume_data.squeeze())
+            spacing = [s.numpy().item() for s in spacing]
+            ct_volume.SetSpacing(spacing)
+            direction = [d.numpy().item() for d in direction]
+            ct_volume.SetDirection(direction)
+            origin = [o.numpy().item() for o in origin]
+            ct_volume.SetOrigin(origin)
+
+            sliced = self.slice_volume_from_pose(pose_gt, ct_volume, us_sim_orig, spacing)
+            lcc_gt = lcc_loss(us_sim.detach(), sliced.view_as(us_sim))
+            gc_gt = self.gradient_correlation_loss(self.median_blur(us_sim), sliced.view_as(us_sim))
+
+            sliced = self.slice_volume_from_pose(output.detach(), ct_volume, us_sim_orig, spacing)
+            lcc_pred = lcc_loss(us_sim.detach(), sliced.view_as(us_sim))
+            gc_pred = self.gradient_correlation_loss(self.median_blur(us_sim), sliced.view_as(us_sim))
+            # the backward only affects the simulation model and not the pose model
+            # since the slicing is not differentiable, and we need to detach the pose model output
+            lcc_ratio = lcc_pred / lcc_gt
+            gc_ratio = gc_pred.detach() / gc_gt
+        else:
+            # initialize all to zero in one line
+            lcc_ratio, gc_ratio, lcc_gt, gc_gt, lcc_pred, gc_pred = [torch.tensor(0, device=us_sim.device) for _ in
+                                                                     range(6)]
+
+        sum_loss = (losses['loss_rot'] + losses['loss_trans']) * 10.0 + gc_pred
+        slicing_losses = {'lcc_gt': lcc_gt, 'lcc_pred': lcc_pred, 'gc_gt': gc_gt, 'gc_pred': gc_pred,
+                          'lcc_ratio': lcc_ratio, 'gc_ratio': gc_ratio, 'sum_loss': sum_loss}
+        losses.update(slicing_losses)
         pred = output
 
-        return loss, pred
+        return losses, pred
 
-    def step(self, input, pose_gt):
-        us_sim_resized = self.rendering_forward(input)
-        loss, pred = self.pose_forward(self, us_sim_resized, pose_gt)
-        # z_norm = self.normalize(z)
+    def slice_volume_from_pose(self, pose, ct_volume: sitk.Image, us_sim, spacing: tuple,
+                               plot: bool = False) -> torch.Tensor:
+        """
+        Slice the volume from the pose and return the slice.
 
-        return loss, us_sim_resized, pred
+        Args:
+            pose: The pose information.
+            ct_volume: The CT volume to slice.
+            us_sim: Used for plotting.
+            spacing: Spacing information.
+            plot: If True, plot the slice.
+
+        Returns:
+            torch.Tensor: The warped slice from the volume.
+        """
+
+        ct_center = get_center_pose(image=ct_volume)
+
+        normalized_rot = torch.nn.functional.normalize(pose[:, -4:].detach().cpu(), p=2, dim=1)
+        r = Rotation.from_quat(normalized_rot)
+        pose_mat = np.eye(4)
+        pose_mat[:3, :3] = r.as_matrix()
+        pose_mat[:3, 3] = pose[0, :3].detach().cpu()
+
+        center_world_pose = ct_center @ pose_mat
+        center_position = center_world_pose[:3, 3]
+
+        # get the normal vectors of the image plane
+        normal_vector = center_world_pose[2, :3]
+        down_vector = center_world_pose[1, :3]
+        right_vector = center_world_pose[0, :3]
+
+        # get the top left corner of the image from the center position
+        top_left_corner = center_position - (SLICED_IMG_SHAPE[1] / 2) * spacing[0] * right_vector - (
+                SLICED_IMG_SHAPE[0] / 2) * spacing[1] * down_vector
+
+        sliced = interpolate_arbitrary_plane(top_left_corner, slice_normal=-1 * normal_vector, volume=ct_volume,
+                                             down_direction=-1 * down_vector, slice_shape=SLICED_IMG_SHAPE)
+        sliced = sitk.GetArrayFromImage(sliced)
+
+        # average over the z axis
+        sliced = sliced.transpose(1, 2, 0)[:, :, 1]
+        sliced = resize(sliced, IMG_SHAPE, preserve_range=True, order=0)[:, ::-1]
+
+        sliced[sliced == 0] = 9
+        sliced[sliced == 15] = 4
+
+        sliced_t = torch.tensor(sliced.copy()).float().to(pose.device)
+        sliced_t = torch.rot90(sliced_t, 1)
+        warped = warp_img2(sliced_t)
+        warped = torch.rot90(warped, 3)
+
+        if plot:
+            # plot both the sliced and the us_sim image in matplotlib
+            plt.imshow(sliced, cmap='gray')
+            plt.show()
+            plt.imshow(us_sim.detach().squeeze().cpu(), cmap='gray')
+            plt.show()
+            plt.imshow(warped.detach().squeeze().cpu(), cmap='gray')
+            plt.show()
+
+        return warped
+
+    # def step(self, input, pose_gt):
+    #     us_sim_resized = self.rendering_forward(input)
+    #     loss, pred = self.pose_forward(self, us_sim_resized, pose_gt)
+    #     # z_norm = self.normalize(z)
+    #
+    #     return loss, us_sim_resized, pred
 
     def get_data(self, batch_data):
-        input, pose_gt, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), \
-        batch_data[2]
+        input, pose_gt, file_name, volume, spacing, direction, origin = batch_data[0].to(self.params.device), \
+        batch_data[1].to(self.params.device), \
+            batch_data[2], batch_data[3], batch_data[4], batch_data[5], batch_data[6]
 
-        return input, pose_gt, file_name
+        return input, pose_gt, file_name, volume, spacing, direction, origin
 
     def validation_step(self, batch_data, epoch, batch_idx=None):
         # print('IN VALIDATION... ')
@@ -144,13 +262,18 @@ class PoseRegressionSim(torch.nn.Module):
 
         input, label, file_name = self.get_data(batch_data)
 
-        loss, us_sim_resized, pred = self.step(input, label)
+        us_sim_resized = self.rendering_forward(input)
+        losses, pred = self.pose_forward(self, us_sim_resized, label)
+        loss = losses['sum_loss']
+        # z_norm = self.normalize(z)
+        # loss, us_sim_resized, pred = self.step(input, label)
 
         dict = self.plot_val_results(input, loss, file_name, label, pred, us_sim_resized, epoch)
 
         return pred, us_sim_resized, loss, dict
 
-    def plot_val_results(self, input, loss, file_name, label, pred, us_sim_resized, epoch):  # todo: this will not work for now
+    def plot_val_results(self, input, loss, file_name, label, pred, us_sim_resized,
+                         epoch):  # todo: this will not work for now
         return {}
 
         val_images_plot = F.resize(input, (SIZE_W, SIZE_H)).float().unsqueeze(0)

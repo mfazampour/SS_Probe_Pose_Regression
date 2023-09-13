@@ -42,8 +42,9 @@ def training_loop_pose_net(hparams, module, inner_model, batch_size, train_loade
             # input, label = module.get_data(batch_data)
             module.optimizer.zero_grad()
 
-            input, label = module.get_data(batch_data)
-            loss, prediction = module.pose_forward(input, label)
+            input, label, file_name, volume = module.get_data(batch_data)
+            losses, prediction = module.pose_forward(input, label)
+            loss = losses['sum_loss']
 
             check_gradients(module)
             loss.backward()
@@ -66,8 +67,9 @@ def training_loop_pose_net(hparams, module, inner_model, batch_size, train_loade
             while step % batch_size != 0:
                 data = next(dataloader_iterator)
 
-                input, label = module.get_data(data)
-                loss, prediction = module.pose_forward(input, label)
+                input, label, file_name, volume = module.get_data(data)
+                losses, prediction = module.pose_forward(input, label)
+                loss = losses['sum_loss']
                 batch_loss_list.append(loss)
                 step += 1
                 if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)

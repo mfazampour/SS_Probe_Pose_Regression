@@ -155,8 +155,7 @@ class CUTTrainer():
 
         # self.cut_model.optimize_parameters()   # calculate loss functions, get gradients, update network weights, backward()
         # calculate loss functions, get gradients, update network weights, backward()
-        self.optimize_time = (
-                                     time.time() - optimize_start_time) / real_us_batch_size * 0.005 + 0.995 * self.optimize_time
+        self.optimize_time = (time.time() - optimize_start_time) / real_us_batch_size * 0.005 + 0.995 * self.optimize_time
 
         # self.cut_model.compute_visuals()
         # cut_imgs = self.cut_model.get_current_visuals()
@@ -208,20 +207,6 @@ def load_dataset(dataloader):
     return DataLoader
 
 
-# def calc_kl_div(img_nr, epoch):
-#     # Normalize the images to have a probability distribution over pixel values
-#     img1 = img1 / torch.sum(img1)
-#     img2 = img2 / torch.sum(img2)
-#
-#     # Compute the KL divergence between the two images
-#     kl_divergence = kl_div(img1.flatten(), img2.flatten())
-#
-#     print("KL divergence between the two images: ", kl_divergence.item())
-#     if hparams.logging: wandb.log({"kl_divergence_epoch_" + str(epoch): kl_divergence.item()})
-#
-#     return kl_divergence.item()
-
-
 def add_online_augmentations(hparams, input, label, module):
     if hparams.net_input_augmentations_noise_blur:
         input = module.rendered_img_random_transf(input)
@@ -258,7 +243,7 @@ def main(opt_cut, hparams, plotter, visualizer):
         inner_model.train()
 
         # ------------------------------------------------------------------------------------------------------------------------------
-        #                                         Train SEG NET only
+        #                                         Train POSE NET only
         # ------------------------------------------------------------------------------------------------------------------------------
         if epoch <= hparams.epochs_only_pose_net and hparams.epochs_only_pose_net > 0:
             # print(f"--------------- INIT SEG NET ------------", cut_trainer.total_iter)
@@ -273,8 +258,10 @@ def main(opt_cut, hparams, plotter, visualizer):
             for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps),
                                          ncols=100, position=0, leave=True):
                 # print(f"--------------- INIT CUT ------------", cut_trainer.total_iter)
-                cut_trainer.train_cut(module, batch_data_ct, epoch, dataloader_real_us_iterator, iter_data_time,
-                                      epoch_iter)
+                # cut_trainer.train_cut(module, batch_data_ct, epoch, dataloader_real_us_iterator, iter_data_time,
+                #                       epoch_iter)
+                # throw an exception, not implemented yet
+                raise NotImplementedError
 
         # ------------------------------------------------------------------------------------------------------------------------------
         #                                         Train US Renderer + SEG NET + CUT
@@ -298,14 +285,13 @@ def main(opt_cut, hparams, plotter, visualizer):
                                                    early_stopping_best_val, epoch, hparams, inner_model, module,
                                                    plotter, real_us_gt_test_dataloader, real_us_stopp_crit_dataloader,
                                                    real_us_train_loader, stoppcrit_losses, testset_losses, train_losses,
-                                                   val_loader_ct_labelmaps, valid_losses)
+                                                   val_loader_ct_labelmaps)
 
         if stop_early:
             break
 
         # clear lists to track next epoch
         train_losses = []
-        valid_losses = []
 
     print(
         f'train completed, avg_train_losses: {np.mean(avg_train_losses)} avg_valid_losses: {np.mean(avg_valid_losses)}')
@@ -316,7 +302,8 @@ def validation_and_stop_check(USRendereDefParams, avg_train_losses, avg_valid_lo
                               dataloader_real_us_iterator, early_stopping, early_stopping_best_val, epoch,
                               hparams, inner_model, module, plotter, real_us_gt_test_dataloader,
                               real_us_stopp_crit_dataloader, real_us_train_loader, stoppcrit_losses,
-                              testset_losses, train_losses, val_loader_ct_labelmaps, valid_losses):
+                              testset_losses, train_losses, val_loader_ct_labelmaps):
+    valid_losses = []
     stop_early = False
     module.eval()
     module.outer_model.eval()
@@ -347,7 +334,7 @@ def validation_and_stop_check(USRendereDefParams, avg_train_losses, avg_valid_lo
         if len(def_renderer_plot_figs) > 0:
             if hparams.logging:
                 plotter.log_image(torchvision.utils.make_grid(def_renderer_plot_figs),
-                                  "default_renderer|labelmap|defaultUS|learnedUS")
+                                  "default_renderer|labelmap|defaultUS|learnedUS|idtB")
     # calculate average loss over an epoch
     train_loss = np.average(train_losses)
     valid_loss = np.average(valid_losses)
@@ -445,7 +432,7 @@ def prepare_for_training(hparams, opt_cut):
     # Load CT dataset
     CTDatasetLoader = load_dataset(hparams.dataloader_ct_labelmaps)
     dataloader = CTDatasetLoader(hparams)
-    train_loader_ct_labelmaps, train_dataset_ct_labelmaps, val_dataset_ct_labelmaps = dataloader.train_dataloader()
+    train_loader_ct_labelmaps, _, _ = dataloader.train_dataloader()
     val_loader_ct_labelmaps = dataloader.val_dataloader()
 
     # Create real ultrasound dataset and get its actual dataset  # todo: there is no image size here
@@ -463,10 +450,12 @@ def prepare_for_training(hparams, opt_cut):
 
     # Load real US GT test and stopping criterion datasets and dataloaders
     RealUSGTDatasetClass = load_dataset(hparams.dataloader_real_us_test)
-    real_us_gt_testdataset = RealUSGTDatasetClass(root_dir=hparams.data_dir_real_us_test)
+    real_us_gt_testdataset = RealUSGTDatasetClass(root_dir=hparams.data_dir_real_us_test,
+                                                  img_size=(hparams.image_size, hparams.image_size))
     real_us_gt_test_dataloader = torch.utils.data.DataLoader(real_us_gt_testdataset, shuffle=False)
 
-    real_us_stopp_crit_dataset = RealUSGTDatasetClass(root_dir=hparams.data_dir_real_us_stopp_crit)
+    real_us_stopp_crit_dataset = RealUSGTDatasetClass(root_dir=hparams.data_dir_real_us_stopp_crit,
+                                                      img_size=(hparams.image_size, hparams.image_size))
     real_us_stopp_crit_dataloader = torch.utils.data.DataLoader(real_us_stopp_crit_dataset, shuffle=False)
 
     # ---------------------
@@ -519,7 +508,8 @@ def infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hparams, modul
             reconstructed_us_testset = (reconstructed_us_testset / 2) + 0.5
 
             # Forward pass through pose regression model
-            testset_loss, pose_pred = module.pose_forward(reconstructed_us_testset, real_label)
+            losses, pose_pred = module.pose_forward(reconstructed_us_testset, real_label)
+            testset_loss = losses['sum_loss']
             testset_losses.append(testset_loss)
 
             # If logging is enabled
@@ -582,7 +572,8 @@ def check_early_stopping(avg_stopp_crit_loss, cut_model, early_stopping, epoch, 
 
             reconstructed_us_stopp_crit = (reconstructed_us_stopp_crit / 2) + 0.5  # from [-1,1] to [0,1]
 
-            stop_crit_loss, pose_pred = module.pose_forward(reconstructed_us_stopp_crit, real_us_label)
+            losses, pose_pred = module.pose_forward(reconstructed_us_stopp_crit, real_us_label)
+            stop_crit_loss = losses['sum_loss']
             stoppcrit_losses.append(stop_crit_loss)
 
             if hparams.logging:
@@ -644,7 +635,7 @@ def validation_one_step(
         wasserstein_distance_bw_rendered_reconstr
 ):
     # Extract validation data and label
-    val_input, val_label, filename = module.get_data(val_batch_data_ct)
+    val_input, val_label, filename, volume, spacing, direction, origin = module.get_data(val_batch_data_ct)
     val_input_copy = val_input.clone().detach()
 
     idt_B_val, us_sim = plot_validation_result(USRendereDefParams, cut_trainer, def_renderer_plot_figs,
@@ -660,8 +651,8 @@ def validation_one_step(
         data_cut_real_us = next(dataloader_real_us_iterator)
 
     # Forward pass through CUT model
-    data_cut_real_us_domain_real = data_cut_real_us['A'].to(hparams.device)
-    cut_trainer.forward_cut_A(data_cut_real_us_domain_real)
+    real_domain_image = data_cut_real_us['A'].to(hparams.device)
+    cut_trainer.forward_cut_A(real_domain_image)
     reconstructed_us = cut_trainer.cut_model.fake_B
     reconstructed_us = (reconstructed_us / 2) + 0.5  # Convert tensor range from [-1,1] to [0,1]
     _, pose_pred = module.pose_forward(reconstructed_us, torch.zeros_like(val_label))
@@ -674,13 +665,13 @@ def validation_one_step(
 
     if hparams.logging and nr < NR_IMGS_TO_PLOT:
         no_random_transform = cut_trainer.inference_transformatons()
-        data_cut_real_us_domain_real = no_random_transform(data_cut_real_us_domain_real)
-        data_cut_real_us_domain_real = (data_cut_real_us_domain_real / 2) + 0.5
+        real_domain_image = no_random_transform(real_domain_image)
+        real_domain_image = (real_domain_image / 2) + 0.5
 
         pred_list = ["{:.4f}".format(value) for value in pose_pred.cpu().numpy().tolist()[0]]
         plot_fig = plotter.plot_stopp_crit(
             caption="infer_CUT_during_val_|real_us|reconstructed_us|us_rendered",
-            imgs=[data_cut_real_us_domain_real, reconstructed_us, us_sim],
+            imgs=[real_domain_image, reconstructed_us, us_sim],
             img_text=f'estimated pose: {",".join(pred_list)}',
             epoch=epoch,
             plot_single=False
@@ -696,7 +687,8 @@ def plot_validation_result(USRendereDefParams, cut_trainer, def_renderer_plot_fi
         cut_trainer.forward_cut_B(us_sim)
         idt_B_val = cut_trainer.cut_model.idt_B
         idt_B_val = (idt_B_val / 2) + 0.5  # Convert tensor range from [-1,1] to [0,1]
-        val_loss_step, pose_pred = module.pose_forward(idt_B_val, val_label)
+        losses, pose_pred = module.pose_forward(idt_B_val, val_label)
+        val_loss_step = losses["sum_loss"]
         if not hparams.log_default_renderer:
             dict_ = module.plot_val_results(val_input, val_loss_step, filename, val_label, pose_pred, idt_B_val, epoch)
     else:
@@ -707,7 +699,8 @@ def plot_validation_result(USRendereDefParams, cut_trainer, def_renderer_plot_fi
         if hparams.debug and hparams.net_input_augmentations_noise_blur:
             us_sim, val_label = add_online_augmentations(hparams, us_sim, val_label, module)
 
-        val_loss_step, pose_pred = module.pose_forward(us_sim, val_label)
+        losses, pose_pred = module.pose_forward(us_sim, val_label)
+        val_loss_step = losses["sum_loss"]
         if not hparams.log_default_renderer:
             dict_ = module.plot_val_results(val_input, val_loss_step, filename, val_label, pose_pred, us_sim, epoch)
     # Append current validation loss
@@ -750,9 +743,9 @@ def train_epoch_full_pipeline(cut_trainer, dataloader_real_us_iterator, epoch, e
                            i, iter_data_time, module, plotter, step, train_losses)
 
     else:  # if batch>1  # this is not called for now
-        train_larger_batch_size(batch_loss_list, cut_trainer, dataloader_real_us_iterator, epoch, epoch_iter,
-                                hparams, step, inner_model, iter_data_time, module, plotter, step,
-                                train_loader_ct_labelmaps, train_losses)
+        # throw an exception if batch_size_manual is not 1
+        raise NotImplementedError("batch_size_manual > 1 is not implemented yet")
+
     if hparams.scheduler:
         module.scheduler.step()
         wandb.log({"lr_": module.optimizer.param_groups[0]["lr"]})
@@ -810,7 +803,7 @@ def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoc
                    iter_data_time, module, plotter, step, train_losses):
     step += 1
     module.optimizer.zero_grad()
-    input, label, filename = module.get_data(batch_data_ct)
+    input, label, filename, volume, spacing, direction, origin = module.get_data(batch_data_ct)
     if hparams.use_idtB:  # we know that use_idtB is always true for now
         us_sim = module.rendering_forward(input)
         us_sim_cut = us_sim.clone().detach()
@@ -825,7 +818,8 @@ def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoc
         if hparams.net_input_augmentations_noise_blur:
             idt_B, label = add_online_augmentations(hparams, idt_B, label, module)
 
-        loss, prediction = module.pose_forward(idt_B, label)
+        losses, prediction = module.pose_forward(idt_B, label, slice_volume=True, volume_data=volume, spacing=spacing, direction=direction, origin=origin, us_sim_orig=us_sim)
+        loss = losses['sum_loss']
 
         if hparams.inner_model_learning_rate == 0:
             cut_trainer.cut_model.set_requires_grad(module.USRenderingModel, False)
@@ -840,7 +834,8 @@ def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoc
         us_sim = module.rendering_forward(input)
         if hparams.net_input_augmentations_noise_blur:
             us_sim, label = add_online_augmentations(hparams, us_sim, label, module)
-        loss, prediction = module.pose_forward(us_sim, label)
+        losses, prediction = module.pose_forward(us_sim, label)
+        loss = losses['sum_loss']
         # check_gradients(module)
         # with torch.autograd.detect_anomaly():
         # log_model_gradients(inner_model, step)
@@ -854,7 +849,7 @@ def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoc
         # cut_trainer.train_cut(module, us_sim_cut, epoch, dataloader_real_us_iterator, i, iter_data_time, epoch_iter)
     # print(f"{step}/{len(train_loader_ct_labelmaps.dataset) // train_loader_ct_labelmaps.batch_size}, train_loss: {loss.item():.4f}")
     if hparams.logging:
-        wandb.log({"train_loss_step": loss.item()})
+        wandb.log({"train_loss_step": losses})
     train_losses.append(loss.item())
     if hparams.logging:
         plotter.log_us_rendering_values(module.USRenderingModel, step)

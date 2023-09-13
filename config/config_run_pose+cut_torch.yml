@@ -1,7 +1,7 @@
 # ================================
 # BASIC CONFIGURATIONS
 # ================================
-debug: True
+debug: False
 exp_name: pose_regression_base_config_
 project_name: PRIUS           # Name of the WandB project
 device: cuda
@@ -44,18 +44,18 @@ warp_img: True
 num_workers: 0  # Previously: 24
 batch_size: 1
 batch_size_manual: 1
-inner_model_learning_rate: 0.0001
-outer_model_learning_rate: 0.00001
+inner_model_learning_rate: 0.001
+outer_model_learning_rate: 0.0001
 scheduler: False
 grad_clipping: False
-min_epochs: 50  # Previously: 70
-max_epochs: 200  # Previously: 200
+min_epochs: 8  # Previously: 70
+max_epochs: 20  # Previously: 200
 early_stopping_patience: 5
 validate_every_n_steps: 1  # Default: 50
 stopping_crit_gt_imgs: True
 epochs_only_cut: 0
 epochs_only_pose_net: 0
-epochs_check_stopp_crit: 50
+epochs_check_stopp_crit: 5
 use_idtB: True
 log_default_renderer: True
 

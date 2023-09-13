@@ -1,21 +1,6 @@
 import numpy as np
 
-
 def create_ultrasound_mask(origin, opening_angle, short_radius, long_radius, img_shape):
-    """
-    Create a mask for the ultrasound fan.
-    Args:
-        origin: tuple of x and y coordinates of the origin of the ultrasound fan
-        opening_angle: opening angle of the ultrasound fan in degrees
-        short_radius: radius of the inner circle of the ultrasound fan
-        long_radius: radius of the outer circle of the ultrasound fan
-        img_shape: shape of the image
-
-    Returns:
-        mask: binary mask of the ultrasound fan
-        width: width of the ultrasound fan in pixels
-        length: length of the ultrasound fan in pixels
-    """
     x, y = origin
     mask = np.zeros(img_shape)
 
@@ -25,10 +10,10 @@ def create_ultrasound_mask(origin, opening_angle, short_radius, long_radius, img
     for i in range(img_shape[0]):
         for j in range(img_shape[1]):
             dx, dy = i - x, j - y
-            d = np.sqrt(dx * dx + dy * dy) - short_radius
+            d = np.sqrt(dx*dx + dy*dy) - short_radius
             theta = np.arctan2(dy, dx) * (180 / np.pi)  # Convert to degrees
 
-            if 0 <= d <= (long_radius - short_radius) and -opening_angle / 2 <= theta <= opening_angle / 2:
+            if 0 <= d <= (long_radius - short_radius) and -opening_angle/2 <= theta <= opening_angle/2:
                 mask[i, j] = 1
 
     # Calculate width and length
@@ -51,6 +36,5 @@ if __name__ == '__main__':
 
     # If you want to visualize the mask, you can use libraries like matplotlib
     import matplotlib.pyplot as plt
-
     plt.imshow(mask, cmap='gray')
     plt.show()

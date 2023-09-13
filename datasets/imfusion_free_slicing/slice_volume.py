@@ -4,31 +4,45 @@ import numpy as np
 import SimpleITK as sitk
 from scipy.interpolate import splprep, splev
 
-from imfusion_free.ultrasound_fan import create_ultrasound_mask
+from datasets.imfusion_free_slicing.ultrasound_fan import create_ultrasound_mask
 
 
 def read_spline_data_from_file(file_path):
     with open(file_path, 'r') as f:
-        header = f.readline()  # Read the header
-        data = f.readline().strip().split(';')
+        lines = f.readlines()
+        header = lines[0]  # Read the header
 
-        input_path = data[0].strip()
-        output_path = data[1].strip()
+        # read the remaining lines
+        # each line contains the path to the volume, the path to the output folder, the transducer spline points and the direction spline points
 
-        if output_path.endswith('.imf'):
-            # set it to parent folder
-            output_path = os.path.dirname(output_path)
+        input_paths, output_paths, trans_splines, dir_splines = [], [], [], []
+
+        for line in lines[1:]:
+
+            data = line.strip().split(';')
+
+            input_path = data[0].strip()
+            output_path = data[1].strip()
+
+            if output_path.endswith('.imf'):
+                # set it to parent folder
+                output_path = os.path.dirname(output_path)
 
 
-        trans_spline_str = data[2].strip().split()
-        trans_spline = [(float(trans_spline_str[i]), float(trans_spline_str[i + 1]), float(trans_spline_str[i + 2])) for
-                        i in range(0, len(trans_spline_str), 3)]
+            trans_spline_str = data[2].strip().split()
+            trans_spline = [(float(trans_spline_str[i]), float(trans_spline_str[i + 1]), float(trans_spline_str[i + 2])) for
+                            i in range(0, len(trans_spline_str), 3)]
 
-        dir_spline_str = data[3].strip().split()
-        dir_spline = [(float(dir_spline_str[i]), float(dir_spline_str[i + 1]), float(dir_spline_str[i + 2])) for i in
-                      range(0, len(dir_spline_str), 3)]
+            dir_spline_str = data[3].strip().split()
+            dir_spline = [(float(dir_spline_str[i]), float(dir_spline_str[i + 1]), float(dir_spline_str[i + 2])) for i in
+                          range(0, len(dir_spline_str), 3)]
 
-    return input_path, output_path, trans_spline, dir_spline
+            input_paths.append(input_path)
+            output_paths.append(output_path)
+            trans_splines.append(trans_spline)
+            dir_splines.append(dir_spline)
+
+    return input_paths, output_paths, trans_splines, dir_splines
 
 
 def slice_volume_from_splines(input_path, output_path, transducer_spline_points, direction_spline_points, w, l,
@@ -36,8 +50,17 @@ def slice_volume_from_splines(input_path, output_path, transducer_spline_points,
     # Read the volume using SimpleITK
     volume = sitk.ReadImage(input_path)
 
-    transducer_spline_interpolator, _ = splprep(np.array(transducer_spline_points).T, k=2)
-    direction_spline_interpolators, _ = splprep(np.array(direction_spline_points).T, k=2)
+    # if error occurs, print the error and splines and return
+    try:
+        transducer_spline_interpolator, _ = splprep(np.array(transducer_spline_points).T, k=2)
+        direction_spline_interpolators, _ = splprep(np.array(direction_spline_points).T, k=2)
+    except Exception as e:
+        # print the error
+        print(e)
+        # print the splines
+        print(transducer_spline_points)
+        print(direction_spline_points)
+        return
 
     u_sampled = np.linspace(0, 1, 11)
     transducer_positions = splev(u_sampled, transducer_spline_interpolator)
@@ -107,21 +130,22 @@ def interpolate_arbitrary_plane(slice_origin, slice_normal, down_direction, volu
 
     slice_values = sitk.GetArrayFromImage(sliced_image)
     # print value range of slice
-    print(f"Slice value range: {np.min(slice_values)} - {np.max(slice_values)}")
+    # print(f"Slice value range: {np.min(slice_values)} - {np.max(slice_values)}")
 
     return sliced_image
 
 
-# Example usage:
-file_path = "/mnt/projects/aorta_scan/random_simulated_ultrasound/CT001/batch.txt"
-input_path, output_path, trans_spline, dir_spline = read_spline_data_from_file(file_path)
+if __name__ == "__main__":
+    # Example usage:
+    file_path = "/mnt/projects/aorta_scan/random_simulated_ultrasound/CT001/batch.txt"
+    input_paths, output_paths, trans_splines, dir_splines = read_spline_data_from_file(file_path)
 
-origin = (106, 246)
-opening_angle = 70  # in degrees
-short_radius = 124  # in pixels
-long_radius = 512  # in pixels
-img_shape = (512, 512)  # this is not important, just for plotting
-_, width_, len_ = create_ultrasound_mask(origin, opening_angle, short_radius, long_radius, img_shape)
-ultrasound_spacing = (0.4, 0.4)
-slices = slice_volume_from_splines(input_path, output_path, trans_spline, dir_spline,
-                                   int(width_ * 1.2 * ultrasound_spacing[0]), int(len_ * 1.2 * ultrasound_spacing[1]))
+    origin = (106, 246)
+    opening_angle = 70  # in degrees
+    short_radius = 124  # in pixels
+    long_radius = 512  # in pixels
+    img_shape = (512, 512)
+    _, width_, len_ = create_ultrasound_mask(origin, opening_angle, short_radius, long_radius, img_shape)
+    ultrasound_spacing = (0.4, 0.4)
+    slices = slice_volume_from_splines(input_paths[0], output_paths[0], trans_splines[0], dir_splines[0],
+                                       int(width_ * 1.2 * ultrasound_spacing[0]), int(len_ * 1.2 * ultrasound_spacing[1]))
