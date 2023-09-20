@@ -70,6 +70,7 @@ class CT3DLabelmapPoseDataset(Dataset):
         self.base_folder_data_imgs = params.base_folder_data_path
 
         self.total_slices = []
+        self.number_of_cts = 0
         # Find subfolders matching the pattern "CT*"
         for dir_name, subdirs, _ in os.walk(self.base_folder_data_imgs):
             for subdir in filter(lambda d: d.startswith('CT'), subdirs):
@@ -85,6 +86,14 @@ class CT3DLabelmapPoseDataset(Dataset):
                     print(f"Could not find volume at: {volume_path}")
                     continue
 
+                ct_path = os.path.join(subdir_path, 'original_ct.nii.gz')
+                if os.path.exists(ct_path):
+                    ct = sitk.ReadImage(ct_path)
+                    print(f"Read CT volume from: {ct_path}")
+                else:
+                    print(f"Could not find volume at: {ct_path}")
+                    continue
+
                 # List all ".nii.gz" files in the "slices" folder
                 slices_dir = os.path.join(subdir_path, 'slices')
                 if os.path.exists(slices_dir):
@@ -95,8 +104,10 @@ class CT3DLabelmapPoseDataset(Dataset):
                         slice_files = [f for f in os.listdir(abs_) if f.endswith('.nii.gz')]
                         for s in slice_files:
                             slice_path = os.path.join(abs_, s)
-                            self.total_slices.append((slice_path, center_pose, volume))
-                break
+                            self.total_slices.append((slice_path, center_pose, volume, ct, self.number_of_cts))
+                self.number_of_cts += 1  # increment the number of CTs # uncomment this to use multi head model
+                # break  # remove this to read all CTs
+        # self.number_of_cts = 1  # comment this to use multi head model
 
         # create the ultrasound mask
         origin = (106, 246)
@@ -146,13 +157,13 @@ class CT3DLabelmapPoseDataset(Dataset):
 
     def __getitem__(self, idx):
         volume: sitk.Image = None
-        vol_path, ref_center_pose, volume = self.total_slices[idx]
+        vol_path, ref_center_pose, volume, ct, ct_id = self.total_slices[idx]
         slice_data = sitk.ReadImage(vol_path)
         slice_data = sitk.GetArrayFromImage(slice_data)
         slice_data = slice_data.transpose(1, 2, 0)
         slice_data = slice_data[:, :, 1]
         labelmap_slice = slice_data.astype('int64')
-        labelmap_slice[labelmap_slice == 0] = 9
+        labelmap_slice[labelmap_slice == 0] = 4
         labelmap_slice[labelmap_slice == 15] = 4
 
         # print('vol_nr: ', vol_nr, 'idx: ', idx)
@@ -173,22 +184,21 @@ class CT3DLabelmapPoseDataset(Dataset):
 
         pose = np.concatenate((position, quat)).astype(np.float32)
 
-        return labelmap_slice, pose, vol_path, sitk.GetArrayFromImage(volume), volume.GetSpacing(), volume.GetDirection(), volume.GetOrigin()
+        return labelmap_slice, pose, vol_path, sitk.GetArrayFromImage(volume), volume.GetSpacing(), volume.GetDirection(), volume.GetOrigin(), sitk.GetArrayFromImage(ct), ct_id
 
 
 class CT3DLabelmapPoseDataLoader():
     def __init__(self, params):
         super().__init__()
         self.params = params
+        self.full_dataset = CT3DLabelmapPoseDataset(self.params)
+        train_size = int(0.8 * len(self.full_dataset))
+        val_size = len(self.full_dataset) - train_size
+
+        self.train_dataset, self.val_dataset = random_split(self.full_dataset, [train_size,
+                                                                                val_size])  # , generator=Generator().manual_seed(0))
 
     def train_dataloader(self):
-        full_dataset = CT3DLabelmapPoseDataset(self.params)
-        train_size = int(0.8 * len(full_dataset))
-        val_size = len(full_dataset) - train_size
-
-        self.train_dataset, self.val_dataset = random_split(full_dataset, [train_size,
-                                                                           val_size])  # , generator=Generator().manual_seed(0))
-
         train_loader = DataLoader(self.train_dataset, batch_size=self.params.batch_size, shuffle=True,
                                   num_workers=self.params.num_workers)
 

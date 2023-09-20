@@ -64,6 +64,7 @@ class PoseRegressionDataset(Dataset):
         self.preprocess = transforms.Compose([
             transforms.Resize(img_size),
             transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5], std=[0.5])
         ])
 
     def calculate_relative_pose(self, us_pose):

@@ -61,8 +61,104 @@ def lcc_loss(I, J, window_size=5):
     return -torch.mean(lcc)
 
 
+def create_return_dict(type, loss, input, file_name, gt_mask, z_hat_pred, us_sim, epoch):
+    dict = {f"{type}_images_unet": (input.detach()),
+            'file_name': file_name,
+            f'{type}_images_gt': gt_mask.detach(),
+            f'{type}_images_pred': z_hat_pred.detach(),
+            f'{type}_images_us_sim': us_sim.detach(),
+            f'{type}_loss': loss.detach(),
+            'epoch': epoch}
+
+    return dict
+
+
+def plot_val_results(input, loss, file_name, label, pred, us_sim_resized,
+                     epoch):  # todo: this will not work for now
+    val_images_plot = F.resize(input, (SIZE_W, SIZE_H)).float().unsqueeze(0)
+    dict = create_return_dict('val', loss, val_images_plot, file_name[0], label, pred, us_sim_resized, epoch)
+
+    return dict
+
+
+def geodesic_loss(q1, q2):
+    # Calculate the dot product between the two quaternions
+    dot_product = (q1 * q2).sum(dim=1)
+    # Clamp the values to avoid numerical instability
+    dot_product = torch.clamp(dot_product, -1.0, 1.0)
+    # Calculate the angle between the two quaternions
+    angle = torch.acos(dot_product)
+    return angle.mean()
+
+
+def slice_volume_from_pose(pose, ct_volume: sitk.Image, us_sim, spacing: tuple,
+                           plot: bool = False, origina_volume=False) -> torch.Tensor:
+    """
+    Slice the volume from the pose and return the slice.
+
+    Args:
+        origina_volume:
+        pose: The pose information.
+        ct_volume: The CT volume to slice.
+        us_sim: Used for plotting.
+        spacing: Spacing information.
+        plot: If True, plot the slice.
+
+    Returns:
+        torch.Tensor: The warped slice from the volume.
+    """
+
+    ct_center = get_center_pose(image=ct_volume)
+
+    normalized_rot = torch.nn.functional.normalize(pose[:, -4:].detach().cpu(), p=2, dim=1)
+    r = Rotation.from_quat(normalized_rot)
+    pose_mat = np.eye(4)
+    pose_mat[:3, :3] = r.as_matrix()
+    pose_mat[:3, 3] = pose[0, :3].detach().cpu()
+
+    center_world_pose = ct_center @ pose_mat
+    center_position = center_world_pose[:3, 3]
+
+    # get the normal vectors of the image plane
+    normal_vector = center_world_pose[2, :3]
+    down_vector = center_world_pose[1, :3]
+    right_vector = center_world_pose[0, :3]
+
+    # get the top left corner of the image from the center position
+    top_left_corner = center_position - (SLICED_IMG_SHAPE[1] / 2) * spacing[0] * right_vector - (
+            SLICED_IMG_SHAPE[0] / 2) * spacing[1] * down_vector
+
+    sliced = interpolate_arbitrary_plane(top_left_corner, slice_normal=-1 * normal_vector, volume=ct_volume,
+                                         down_direction=-1 * down_vector, slice_shape=SLICED_IMG_SHAPE)
+    sliced = sitk.GetArrayFromImage(sliced)
+
+    # average over the z axis
+    sliced = sliced.transpose(1, 2, 0)[:, :, 1]
+    sliced = resize(sliced, IMG_SHAPE, preserve_range=True, order=0)[:, ::-1]
+
+    if not origina_volume:
+        sliced[sliced == 0] = 9
+        sliced[sliced == 15] = 4
+
+    sliced_t = torch.tensor(sliced.copy()).float().to(pose.device)
+    sliced_t = torch.rot90(sliced_t, 1)
+    warped = warp_img2(sliced_t)
+    warped = torch.rot90(warped, 3)
+
+    if plot:
+        # plot both the sliced and the us_sim image in matplotlib
+        plt.imshow(sliced, cmap='gray')
+        plt.show()
+        plt.imshow(us_sim.detach().squeeze().cpu(), cmap='gray')
+        plt.show()
+        plt.imshow(warped.detach().squeeze().cpu(), cmap='gray')
+        plt.show()
+
+    return warped
+
+
 class PoseRegressionSim(torch.nn.Module):
-    def __init__(self, params, inner_model=None):
+    def __init__(self, params, inner_model=None, number_of_cts=1):
         super(PoseRegressionSim, self).__init__()
         self.params = params
 
@@ -71,7 +167,7 @@ class PoseRegressionSim(torch.nn.Module):
 
         # define transforms for image
         self.rendered_img_masks_random_transf = transforms.Compose([
-            transforms.Resize([286, 286], transforms.InterpolationMode.NEAREST),  # todo: check if 286 is ok
+            transforms.Resize([286, 286], transforms.InterpolationMode.NEAREST),
             transforms.RandomCrop(256),
         ])
 
@@ -81,10 +177,10 @@ class PoseRegressionSim(torch.nn.Module):
             # transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),    #???
         ])
 
-        if params.net_input_augmentations_noise_blur:  # todo: change the names later
+        if params.net_input_augmentations_noise_blur:
             print(self.rendered_img_random_transf)
 
-        self.outer_model = PoseRegressionNet().to(params.device)
+        self.outer_model = PoseRegressionNet(number_of_cts=number_of_cts).to(params.device)
 
         self.gradient_correlation_loss = GradientCorrelationLoss2d(gauss_sigma=None).to(params.device)
         self.gradient_correlation = GradientCorrelation2d().to(params.device)
@@ -101,18 +197,9 @@ class PoseRegressionSim(torch.nn.Module):
         print(f'OuterModel On cuda?: ', next(self.outer_model.parameters()).is_cuda)
         print('USRenderingModel On cuda?: ', next(self.USRenderingModel.parameters()).is_cuda)
 
-    def geodesic_loss(self, q1, q2):
-        # Calculate the dot product between the two quaternions
-        dot_product = (q1 * q2).sum(dim=1)
-        # Clamp the values to avoid numerical instability
-        dot_product = torch.clamp(dot_product, -1.0, 1.0)
-        # Calculate the angle between the two quaternions
-        angle = torch.acos(dot_product)
-        return angle.mean()
-
     def pose_loss(self, predicted_poses, gt_poses):
         normalized_rot = torch.nn.functional.normalize(predicted_poses[:, -4:], p=2, dim=1)
-        loss_rot = self.geodesic_loss(normalized_rot, gt_poses[:, -4:])
+        loss_rot = geodesic_loss(normalized_rot, gt_poses[:, -4:])
         loss_trans = torch.nn.functional.mse_loss(predicted_poses[:, :3],
                                                   gt_poses[:, :3] / self.translation_normalization_coeff)
         losses = {'loss_rot': loss_rot, 'loss_trans': loss_trans}
@@ -122,17 +209,6 @@ class PoseRegressionSim(torch.nn.Module):
     def normalize(self, img):
         return (img - torch.min(img)) / (torch.max(img) - torch.min(img))
 
-    def create_return_dict(self, type, loss, input, file_name, gt_mask, z_hat_pred, us_sim, epoch):
-        dict = {f"{type}_images_unet": (input.detach()),
-                'file_name': file_name,
-                f'{type}_images_gt': gt_mask.detach(),
-                f'{type}_images_pred': z_hat_pred.detach(),
-                f'{type}_images_us_sim': us_sim.detach(),
-                f'{type}_loss': loss.detach(),
-                'epoch': epoch}
-
-        return dict
-
     def rendering_forward(self, input):
         us_sim = self.USRenderingModel(input.squeeze())
         us_sim_resized = F.resize(us_sim.unsqueeze(0).unsqueeze(0), (SIZE_W, SIZE_H)).float()
@@ -141,12 +217,12 @@ class PoseRegressionSim(torch.nn.Module):
         return us_sim_resized
 
     def pose_forward(self, us_sim, pose_gt, slice_volume=False, volume_data=None, spacing=None, direction=None,
-                     origin=None, us_sim_orig=None):
-        output = self.outer_model.forward(us_sim)
+                     origin=None, us_sim_orig=None, ct_data=None, ct_id=0):
+        output = self.outer_model.forward(us_sim, ct_id=ct_id)
         losses = self.pose_loss(output, pose_gt)
 
         if slice_volume:
-            ct_volume = sitk.GetImageFromArray(volume_data.squeeze())
+            ct_volume = sitk.GetImageFromArray(ct_data.squeeze())
             spacing = [s.numpy().item() for s in spacing]
             ct_volume.SetSpacing(spacing)
             direction = [d.numpy().item() for d in direction]
@@ -154,13 +230,14 @@ class PoseRegressionSim(torch.nn.Module):
             origin = [o.numpy().item() for o in origin]
             ct_volume.SetOrigin(origin)
 
-            sliced = self.slice_volume_from_pose(pose_gt, ct_volume, us_sim_orig, spacing)
+            sliced = slice_volume_from_pose(pose_gt, ct_volume, us_sim_orig, spacing, origina_volume=True)
             lcc_gt = lcc_loss(us_sim.detach(), sliced.view_as(us_sim))
-            gc_gt = self.gradient_correlation_loss(self.median_blur(us_sim), sliced.view_as(us_sim))
+            # gc_gt = self.gradient_correlation_loss(self.median_blur(us_sim), sliced.view_as(us_sim))
+            gc_gt = self.gradient_correlation_loss(self.median_blur(us_sim_orig), self.median_blur(sliced.view_as(us_sim)).detach())
 
-            sliced = self.slice_volume_from_pose(output.detach(), ct_volume, us_sim_orig, spacing)
+            sliced = slice_volume_from_pose(output.detach(), ct_volume, us_sim_orig, spacing, origina_volume=True)
             lcc_pred = lcc_loss(us_sim.detach(), sliced.view_as(us_sim))
-            gc_pred = self.gradient_correlation_loss(self.median_blur(us_sim), sliced.view_as(us_sim))
+            gc_pred = self.gradient_correlation_loss(self.median_blur(us_sim), self.median_blur(sliced.view_as(us_sim)).detach())
             # the backward only affects the simulation model and not the pose model
             # since the slicing is not differentiable, and we need to detach the pose model output
             lcc_ratio = lcc_pred / lcc_gt
@@ -170,76 +247,13 @@ class PoseRegressionSim(torch.nn.Module):
             lcc_ratio, gc_ratio, lcc_gt, gc_gt, lcc_pred, gc_pred = [torch.tensor(0, device=us_sim.device) for _ in
                                                                      range(6)]
 
-        sum_loss = (losses['loss_rot'] + losses['loss_trans']) * 10.0 + gc_pred
+        sum_loss = (losses['loss_rot'] + losses['loss_trans']) * 10.0 + gc_pred + gc_gt
         slicing_losses = {'lcc_gt': lcc_gt, 'lcc_pred': lcc_pred, 'gc_gt': gc_gt, 'gc_pred': gc_pred,
                           'lcc_ratio': lcc_ratio, 'gc_ratio': gc_ratio, 'sum_loss': sum_loss}
         losses.update(slicing_losses)
         pred = output
 
         return losses, pred
-
-    def slice_volume_from_pose(self, pose, ct_volume: sitk.Image, us_sim, spacing: tuple,
-                               plot: bool = False) -> torch.Tensor:
-        """
-        Slice the volume from the pose and return the slice.
-
-        Args:
-            pose: The pose information.
-            ct_volume: The CT volume to slice.
-            us_sim: Used for plotting.
-            spacing: Spacing information.
-            plot: If True, plot the slice.
-
-        Returns:
-            torch.Tensor: The warped slice from the volume.
-        """
-
-        ct_center = get_center_pose(image=ct_volume)
-
-        normalized_rot = torch.nn.functional.normalize(pose[:, -4:].detach().cpu(), p=2, dim=1)
-        r = Rotation.from_quat(normalized_rot)
-        pose_mat = np.eye(4)
-        pose_mat[:3, :3] = r.as_matrix()
-        pose_mat[:3, 3] = pose[0, :3].detach().cpu()
-
-        center_world_pose = ct_center @ pose_mat
-        center_position = center_world_pose[:3, 3]
-
-        # get the normal vectors of the image plane
-        normal_vector = center_world_pose[2, :3]
-        down_vector = center_world_pose[1, :3]
-        right_vector = center_world_pose[0, :3]
-
-        # get the top left corner of the image from the center position
-        top_left_corner = center_position - (SLICED_IMG_SHAPE[1] / 2) * spacing[0] * right_vector - (
-                SLICED_IMG_SHAPE[0] / 2) * spacing[1] * down_vector
-
-        sliced = interpolate_arbitrary_plane(top_left_corner, slice_normal=-1 * normal_vector, volume=ct_volume,
-                                             down_direction=-1 * down_vector, slice_shape=SLICED_IMG_SHAPE)
-        sliced = sitk.GetArrayFromImage(sliced)
-
-        # average over the z axis
-        sliced = sliced.transpose(1, 2, 0)[:, :, 1]
-        sliced = resize(sliced, IMG_SHAPE, preserve_range=True, order=0)[:, ::-1]
-
-        sliced[sliced == 0] = 9
-        sliced[sliced == 15] = 4
-
-        sliced_t = torch.tensor(sliced.copy()).float().to(pose.device)
-        sliced_t = torch.rot90(sliced_t, 1)
-        warped = warp_img2(sliced_t)
-        warped = torch.rot90(warped, 3)
-
-        if plot:
-            # plot both the sliced and the us_sim image in matplotlib
-            plt.imshow(sliced, cmap='gray')
-            plt.show()
-            plt.imshow(us_sim.detach().squeeze().cpu(), cmap='gray')
-            plt.show()
-            plt.imshow(warped.detach().squeeze().cpu(), cmap='gray')
-            plt.show()
-
-        return warped
 
     # def step(self, input, pose_gt):
     #     us_sim_resized = self.rendering_forward(input)
@@ -249,37 +263,28 @@ class PoseRegressionSim(torch.nn.Module):
     #     return loss, us_sim_resized, pred
 
     def get_data(self, batch_data):
-        input, pose_gt, file_name, volume, spacing, direction, origin = batch_data[0].to(self.params.device), \
+        input, pose_gt, file_name, volume, spacing, direction, origin, ct, ct_id = batch_data[0].to(self.params.device), \
         batch_data[1].to(self.params.device), \
-            batch_data[2], batch_data[3], batch_data[4], batch_data[5], batch_data[6]
+            batch_data[2], batch_data[3], batch_data[4], batch_data[5], batch_data[6], batch_data[7], batch_data[8]
 
-        return input, pose_gt, file_name, volume, spacing, direction, origin
+        return input, pose_gt, file_name, volume, spacing, direction, origin, ct, ct_id
 
-    def validation_step(self, batch_data, epoch, batch_idx=None):
-        # print('IN VALIDATION... ')
-        # input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
-        # label = self.label_preprocess(label)
-
-        input, label, file_name = self.get_data(batch_data)
-
-        us_sim_resized = self.rendering_forward(input)
-        losses, pred = self.pose_forward(self, us_sim_resized, label)
-        loss = losses['sum_loss']
-        # z_norm = self.normalize(z)
-        # loss, us_sim_resized, pred = self.step(input, label)
-
-        dict = self.plot_val_results(input, loss, file_name, label, pred, us_sim_resized, epoch)
-
-        return pred, us_sim_resized, loss, dict
-
-    def plot_val_results(self, input, loss, file_name, label, pred, us_sim_resized,
-                         epoch):  # todo: this will not work for now
-        return {}
-
-        val_images_plot = F.resize(input, (SIZE_W, SIZE_H)).float().unsqueeze(0)
-        dict = self.create_return_dict('val', loss, val_images_plot, file_name[0], label, pred, us_sim_resized, epoch)
-
-        return dict
+    # def validation_step(self, batch_data, epoch, batch_idx=None):
+    #     # print('IN VALIDATION... ')
+    #     # input, label, file_name = batch_data[0].to(self.params.device), batch_data[1].to(self.params.device), batch_data[2]
+    #     # label = self.label_preprocess(label)
+    #
+    #     input, label, filename, volume, spacing, direction, origin, ct, ct_id = self.get_data(batch_data)
+    #
+    #     us_sim_resized = self.rendering_forward(input)
+    #     losses, pred = self.pose_forward(self, us_sim_resized, label)
+    #     loss = losses['sum_loss']
+    #     # z_norm = self.normalize(z)
+    #     # loss, us_sim_resized, pred = self.step(input, label)
+    #
+    #     dict = plot_val_results(input, loss, filename, label, pred, us_sim_resized, epoch)
+    #
+    #     return pred, us_sim_resized, loss, dict
 
     def configure_optimizers(self, inner_model, outer_model):
 
@@ -306,11 +311,11 @@ class PoseRegressionSim(torch.nn.Module):
 
 
 class PoseRegressionNet(nn.Module):
-    def __init__(self):
+    def __init__(self, number_of_cts=1):
         super(PoseRegressionNet, self).__init__()
 
         # Initialize the EfficientNet model
-        efficientnet_pretrained = timm.create_model('efficientnet_b0', pretrained=True, num_classes=0)
+        efficientnet_pretrained = timm.create_model('efficientnet_b0', pretrained=False, num_classes=0)
 
         # Get the weights from the first convolutional layer
         pretrained_weights = efficientnet_pretrained.conv_stem.weight
@@ -333,19 +338,21 @@ class PoseRegressionNet(nn.Module):
         num_features = self.efficientnet.num_features
 
         # Fully connected layers for pose regression
-        self.fc_layers = nn.Sequential(
-            nn.Linear(num_features, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, 7)
-        )
+        self.fc_layers = nn.ModuleList()
+        for i in range(number_of_cts):
+            self.fc_layers.append(nn.Sequential(
+                nn.Linear(num_features, 512, bias=False),
+                nn.ReLU(),
+                nn.Linear(512, 256, bias=False),
+                nn.ReLU(),
+                nn.Linear(256, 7, bias=False)
+            ))
 
-    def forward(self, x):
+    def forward(self, x, ct_id=0):
         # Pass input through EfficientNet
         x = self.efficientnet(x)
 
         # Pass output through fully connected layers
-        x = self.fc_layers(x)
+        x = self.fc_layers[ct_id](x)
 
         return x

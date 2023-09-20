@@ -302,7 +302,8 @@ class Visualizer():
         message = '(epoch: %d, iters: %d, time: %.3f, data: %.3f) ' % (epoch, iters, t_comp, t_data)
         for k, v in losses.items():
             message += '%s: %.3f ' % (k, v)
-            wandb.log({f"loss_{k}": v, "epoch": epoch})
+            if wandb.run is not None:
+                wandb.log({f"loss_{k}": v, "epoch": epoch})
 
         print(message)  # print the message
         ##### Save losses to file #####

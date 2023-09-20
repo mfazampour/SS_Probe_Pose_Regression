@@ -59,7 +59,7 @@ def warp_img2(inputImage):
     resultHeight = 220
     centerX = resultWidth / 2
     centerY = -120.0
-    maxAngle =  60.0 / 2 / 180 * pi #rad
+    maxAngle = 60.0 / 2 / 180 * pi #rad
     minAngle = -maxAngle
     minRadius = 140.0
     maxRadius = 340.0

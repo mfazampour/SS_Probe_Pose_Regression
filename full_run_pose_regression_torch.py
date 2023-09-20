@@ -20,10 +20,12 @@ from cut.options.cactussend2end_options import CACTUSSEnd2EndOptions
 from cut.util.visualizer import Visualizer as CUTVisualizer
 from full_run_torch import training_loop_pose_net
 from models.us_rendering_model_torch import UltrasoundRendering
+from modules.poseRegressionEfficientNetSim_torch import plot_val_results
 from utils.configargparse_arguments_torch import build_configargparser
 from utils.early_stopping import EarlyStopping
 from utils.plotter_torch import Plotter
 from utils.utils import argparse_summary, get_class_by_path
+from modules.poseRegressionEfficientNetSim_torch import PoseRegressionSim
 
 
 class CUTTrainer():
@@ -41,6 +43,7 @@ class CUTTrainer():
         self.init_cut = True
         self.cut_plot_figs = []
         self.data_cut_real_us = []
+        self.cut_transform = cut_get_transform(self.opt_cut, grayscale=False, convert=False, us_sim_flip=True)
 
     def cut_optimize_parameters(self, module, dice_loss):
         # update D
@@ -121,7 +124,6 @@ class CUTTrainer():
             dataloader_real_us_iterator = iter(self.real_us_train_loader)
             self.data_cut_real_us = next(dataloader_real_us_iterator)
 
-        self.cut_transform = cut_get_transform(self.opt_cut, grayscale=False, convert=False, us_sim_flip=True)
         self.random_state = torch.get_rng_state()
         self.data_cut_real_us["A"] = self.cut_transform(self.data_cut_real_us["A"]).to(hparams.device)
         # self.data_cut_real_us["A"] = self.data_cut_real_us["A"].to(hparams.device)
@@ -175,15 +177,6 @@ class CUTTrainer():
                                                          wandb)
 
 
-# LOAD MODULE
-def load_module(module):
-    # ------------------------
-    # LOAD MODULE
-    # ------------------------
-    module_path = f"modules.{hparams.module}"
-    ModuleClass = get_class_by_path(module_path)
-
-    return ModuleClass
 
 
 def load_model(model):
@@ -212,6 +205,20 @@ def add_online_augmentations(hparams, input, label, module):
         input = module.rendered_img_random_transf(input)
 
     return input, label
+
+
+def plot_stop_criteria_figs(epoch, hparams, plotter, stopp_crit_plot_figs,
+                            wasserstein_distance_bw_rendered_idt_reconstr, wasserstein_distance_bw_rendered_reconstr):
+    if hparams.logging:
+        plotter.log_image(torchvision.utils.make_grid(stopp_crit_plot_figs),
+                          "infer_CUT_during_val_|real_us|reconstructed_us|us_rendered")
+
+        wandb.log({"mean_wasserstein_distance_bw_rendered&reconstr_epoch": np.mean(
+            wasserstein_distance_bw_rendered_reconstr), "epoch": epoch})
+        if hparams.use_idtB: wandb.log({
+            "mean_wasserstein_distance_bw_rendered_idt&reconstr_epoch": np.mean(
+                wasserstein_distance_bw_rendered_idt_reconstr),
+            "epoch": epoch})
 
 
 def main(opt_cut, hparams, plotter, visualizer):
@@ -245,6 +252,7 @@ def main(opt_cut, hparams, plotter, visualizer):
         # ------------------------------------------------------------------------------------------------------------------------------
         #                                         Train POSE NET only
         # ------------------------------------------------------------------------------------------------------------------------------
+        #### this is not used now
         if epoch <= hparams.epochs_only_pose_net and hparams.epochs_only_pose_net > 0:
             # print(f"--------------- INIT SEG NET ------------", cut_trainer.total_iter)
             training_loop_pose_net(hparams, module, inner_model, hparams.batch_size_manual, train_loader_ct_labelmaps,
@@ -280,12 +288,24 @@ def main(opt_cut, hparams, plotter, visualizer):
         # ------------------------------------------------------------------------------------------------------------------------------
         stop_early = False
         if epoch % hparams.validate_every_n_steps == 0 and epoch > hparams.epochs_only_cut:
-            stop_early = validation_and_stop_check(USRendereDefParams, avg_train_losses, avg_valid_losses, cut_model,
-                                                   cut_trainer, dataloader_real_us_iterator, early_stopping,
-                                                   early_stopping_best_val, epoch, hparams, inner_model, module,
-                                                   plotter, real_us_gt_test_dataloader, real_us_stopp_crit_dataloader,
-                                                   real_us_train_loader, stoppcrit_losses, testset_losses, train_losses,
-                                                   val_loader_ct_labelmaps)
+            run_validation(USRendereDefParams, avg_train_losses, avg_valid_losses, cut_model, cut_trainer,
+                           dataloader_real_us_iterator, early_stopping_best_val, epoch, hparams, inner_model, module,
+                           plotter, real_us_gt_test_dataloader, real_us_train_loader, train_losses,
+                           val_loader_ct_labelmaps)
+
+            # ------------------------------------------------------------------------------------------------------------------------------
+            #             (GT STOPPING CRITERION) INFER REAL US STOPPONG CRIT TEST SET IMGS THROUGH THE CUT+SEG NET
+            # -------------------------------------------------------------------------------------------------------------------------------
+            if hparams.stopping_crit_gt_imgs and epoch > hparams.epochs_check_stopp_crit:
+                print(f"--------------- STOPPING CRITERIA US IMGS CHECK ------------")
+                sopp_crit_imgs_plot_figs = []
+                check_early_stopping(cut_model, early_stopping, epoch, hparams, module, plotter,
+                                     real_us_stopp_crit_dataloader,
+                                     sopp_crit_imgs_plot_figs, stoppcrit_losses)
+
+                if early_stopping.early_stop and hparams.min_epochs:
+                    print("Early stopping")
+                    stop_early = True
 
         if stop_early:
             break
@@ -296,97 +316,6 @@ def main(opt_cut, hparams, plotter, visualizer):
     print(
         f'train completed, avg_train_losses: {np.mean(avg_train_losses)} avg_valid_losses: {np.mean(avg_valid_losses)}')
     print(f'best val_loss: {early_stopping.val_loss_min} at best_epoch: {early_stopping.best_epoch}')
-
-
-def validation_and_stop_check(USRendereDefParams, avg_train_losses, avg_valid_losses, cut_model, cut_trainer,
-                              dataloader_real_us_iterator, early_stopping, early_stopping_best_val, epoch,
-                              hparams, inner_model, module, plotter, real_us_gt_test_dataloader,
-                              real_us_stopp_crit_dataloader, real_us_train_loader, stoppcrit_losses,
-                              testset_losses, train_losses, val_loader_ct_labelmaps):
-    valid_losses = []
-    stop_early = False
-    module.eval()
-    module.outer_model.eval()
-    inner_model.eval()
-    cut_model.eval()
-    USRendereDefParams.eval()
-    val_step = 0
-    print(f"--------------- VALIDATION SEG NET ------------")
-    stopp_crit_plot_figs = []
-    def_renderer_plot_figs = []
-    wasserstein_distance_bw_rendered_reconstr = []
-    wasserstein_distance_bw_rendered_idt_reconstr = []
-    with torch.no_grad():
-        for nr, val_batch_data_ct in tqdm(enumerate(val_loader_ct_labelmaps),
-                                          total=len(val_loader_ct_labelmaps), ncols=100, desc="validation"):
-            val_step += 1
-
-            validation_one_step(USRendereDefParams, cut_trainer, dataloader_real_us_iterator, def_renderer_plot_figs,
-                                epoch, hparams, module, nr, plotter, real_us_train_loader, stopp_crit_plot_figs,
-                                val_batch_data_ct, valid_losses, wasserstein_distance_bw_rendered_idt_reconstr,
-                                wasserstein_distance_bw_rendered_reconstr)
-
-        if len(stopp_crit_plot_figs) > 0:
-            plot_stop_criteria_figs(epoch, hparams, plotter, stopp_crit_plot_figs,
-                                    wasserstein_distance_bw_rendered_idt_reconstr,
-                                    wasserstein_distance_bw_rendered_reconstr)
-
-        if len(def_renderer_plot_figs) > 0:
-            if hparams.logging:
-                plotter.log_image(torchvision.utils.make_grid(def_renderer_plot_figs),
-                                  "default_renderer|labelmap|defaultUS|learnedUS|idtB")
-    # calculate average loss over an epoch
-    train_loss = np.average(train_losses)
-    valid_loss = np.average(valid_losses)
-    avg_train_losses.append(train_loss)
-    avg_valid_losses.append(valid_loss)
-    epoch_len = len(str(hparams.max_epochs))
-    print(f'[{epoch:>{epoch_len}}/{hparams.max_epochs:>{epoch_len}}] ' +
-          f'pose_train_loss_epoch: {train_loss:.5f} ' +
-          f'pose_valid_loss_epoch: {valid_loss:.5f}')
-    if hparams.logging: wandb.log({"pose_train_loss_epoch": train_loss, "epoch": epoch})
-    if hparams.logging: wandb.log({"pose_val_loss_epoch": valid_loss, "epoch": epoch})
-    if hparams.logging and not hparams.log_default_renderer: plotter.validation_epoch_end()
-    if (epoch > 20):  # hparams.min_epochs):
-        early_stopping_best_val(valid_loss, epoch, module, cut_model.netG)
-    # ------------------------------------------------------------------------------------------------------------------------------
-    #                                      END POSE NETWORK VALIDATION
-    # ------------------------------------------------------------------------------------------------------------------------------
-    print(f"--------------- END POSE NETWORK VALIDATION ------------")
-    cut_model.eval()
-
-    # run inference
-    # ------------------------------------------------------------------------------------------------------------------------------
-    #             (GT STOPPING CRITERION) INFER REAL US STOPPONG CRIT TEST SET IMGS THROUGH THE CUT+SEG NET
-    # -------------------------------------------------------------------------------------------------------------------------------
-    avg_stopp_crit_loss = 1
-    if hparams.stopping_crit_gt_imgs and epoch > hparams.epochs_check_stopp_crit:
-        print(f"--------------- STOPPING CRITERIA US IMGS CHECK ------------")
-        sopp_crit_imgs_plot_figs = []
-        check_early_stopping(avg_stopp_crit_loss, cut_model, early_stopping, epoch, hparams, module, plotter,
-                             real_us_stopp_crit_dataloader, sopp_crit_imgs_plot_figs, stoppcrit_losses)
-
-        if early_stopping.early_stop and hparams.min_epochs:
-            print("Early stopping")
-            stop_early = True
-        stoppcrit_losses = []
-
-        # ------------------------------------------------------------------------------------------------------------------------------
-        #             INFER REAL US IMGS THROUGH THE CUT+SEG NET - INFER THE WHOLE TEST SET
-        # ------------------------------------------------------------------------------------------------------------------------------
-        avg_testset_loss = 1
-        std_testset_loss = 0
-        if not stop_early:
-            print(f"--------------- INFERENCE: WHOLE TEST US GT IMGS  ------------")
-            gt_test_imgs_plot_figs = []
-
-            infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hparams, module, plotter,
-                                real_us_gt_test_dataloader, testset_losses)
-
-        testset_losses = []
-        hausdorff_epoch = []
-        # ------------------------------------------------------------------------------------------------------------------------------
-    return stop_early
 
 
 def prepare_for_training(hparams, opt_cut):
@@ -402,30 +331,6 @@ def prepare_for_training(hparams, opt_cut):
     """
 
     # ---------------------
-    # LOAD MODEL
-    # ---------------------
-
-    # Create CUT model based on the given options
-    cut_model = cut_create_model(opt_cut)
-
-    # Load module and model classes
-    ModuleClass = load_module(hparams.module)
-    InnerModelClass = load_model(hparams.inner_model)
-
-    # Initialize inner model with hyperparameters
-    inner_model = InnerModelClass(params=hparams)
-
-    # Initialize Ultrasound Rendering with default parameters and set to device
-    USRendereDefParams = UltrasoundRendering(params=hparams, default_param=True).to(hparams.device)
-
-    # Initialize module with hyperparameters and inner model
-    module = ModuleClass(params=hparams, inner_model=inner_model)
-
-    # Set up logging if required
-    if hparams.logging:
-        wandb.watch([inner_model, module.outer_model], log='all', log_graph=True, log_freq=100)
-
-    # ---------------------
     # LOAD DATA
     # ---------------------
 
@@ -434,6 +339,7 @@ def prepare_for_training(hparams, opt_cut):
     dataloader = CTDatasetLoader(hparams)
     train_loader_ct_labelmaps, _, _ = dataloader.train_dataloader()
     val_loader_ct_labelmaps = dataloader.val_dataloader()
+
 
     # Create real ultrasound dataset and get its actual dataset  # todo: there is no image size here
     real_us_dataset = cut_create_dataset(opt_cut)
@@ -457,6 +363,29 @@ def prepare_for_training(hparams, opt_cut):
     real_us_stopp_crit_dataset = RealUSGTDatasetClass(root_dir=hparams.data_dir_real_us_stopp_crit,
                                                       img_size=(hparams.image_size, hparams.image_size))
     real_us_stopp_crit_dataloader = torch.utils.data.DataLoader(real_us_stopp_crit_dataset, shuffle=False)
+
+    # ---------------------
+    # LOAD MODEL
+    # ---------------------
+    # Create CUT model based on the given options
+    cut_model = cut_create_model(opt_cut)
+
+    # Load module and model classes
+    ModuleClass = PoseRegressionSim  #load_module(hparams.module)
+    InnerModelClass = load_model(hparams.inner_model)
+
+    # Initialize inner model with hyperparameters
+    inner_model = InnerModelClass(params=hparams)
+
+    # Initialize Ultrasound Rendering with default parameters and set to device
+    USRendereDefParams = UltrasoundRendering(params=hparams, default_param=True).to(hparams.device)
+
+    # Initialize module with hyperparameters and inner model
+    module = ModuleClass(params=hparams, inner_model=inner_model, number_of_cts=dataloader.full_dataset.number_of_cts)
+
+    # Set up logging if required
+    if hparams.logging:
+        wandb.watch([inner_model, module.outer_model], log='all', log_graph=True, log_freq=100)
 
     # ---------------------
     # TRAINING UTILITIES
@@ -488,8 +417,74 @@ def prepare_for_training(hparams, opt_cut):
     )
 
 
-def infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hparams, module, plotter,
-                        real_us_gt_test_dataloader, testset_losses):
+def run_validation(USRendereDefParams, avg_train_losses, avg_valid_losses, cut_model, cut_trainer,
+                              dataloader_real_us_iterator, early_stopping_best_val, epoch,
+                              hparams, inner_model, module, plotter, real_us_gt_test_dataloader,
+                              real_us_train_loader,  train_losses, val_loader_ct_labelmaps):
+    valid_losses = []
+    module.eval()
+    module.outer_model.eval()
+    inner_model.eval()
+    cut_model.eval()
+    USRendereDefParams.eval()
+    val_step = 0
+    print(f"--------------- VALIDATION SEG NET ------------")
+    stopp_crit_plot_figs = []
+    def_renderer_plot_figs = []
+    wasserstein_distance_bw_rendered_reconstr = []
+    wasserstein_distance_bw_rendered_idt_reconstr = []
+    with torch.no_grad():
+        for nr, val_batch_data_ct in tqdm(enumerate(val_loader_ct_labelmaps),
+                                          total=len(val_loader_ct_labelmaps), ncols=100, desc="validation"):
+            val_step += 1
+
+            validation_one_step(val_batch_data_ct, USRendereDefParams, cut_trainer, dataloader_real_us_iterator,
+                                def_renderer_plot_figs, epoch, hparams, module, nr, plotter, real_us_train_loader,
+                                stopp_crit_plot_figs, valid_losses, wasserstein_distance_bw_rendered_idt_reconstr,
+                                wasserstein_distance_bw_rendered_reconstr)
+
+        if len(stopp_crit_plot_figs) > 0:
+            plot_stop_criteria_figs(epoch, hparams, plotter, stopp_crit_plot_figs,
+                                    wasserstein_distance_bw_rendered_idt_reconstr,
+                                    wasserstein_distance_bw_rendered_reconstr)
+
+        if len(def_renderer_plot_figs) > 0:
+            if hparams.logging:
+                plotter.log_image(torchvision.utils.make_grid(def_renderer_plot_figs),
+                                  "default_renderer|labelmap|defaultUS|learnedUS|idtB")
+    # calculate average loss over an epoch
+    train_loss = np.average(train_losses)
+    valid_loss = np.average(valid_losses)
+    avg_train_losses.append(train_loss)
+    avg_valid_losses.append(valid_loss)
+    epoch_len = len(str(hparams.max_epochs))
+    print(f'[{epoch:>{epoch_len}}/{hparams.max_epochs:>{epoch_len}}] ' +
+          f'pose_train_loss_epoch: {train_loss:.5f} ' +
+          f'pose_valid_loss_epoch: {valid_loss:.5f}')
+    if hparams.logging:
+        wandb.log({"pose_train_loss_epoch": train_loss, "epoch": epoch})
+        wandb.log({"pose_val_loss_epoch": valid_loss, "epoch": epoch})
+        if not hparams.log_default_renderer:
+            plotter.validation_epoch_end()
+
+    if (epoch > 20):  # hparams.min_epochs):
+        early_stopping_best_val(valid_loss, epoch, module, cut_model.netG)
+    # ------------------------------------------------------------------------------------------------------------------------------
+    #                                      END POSE NETWORK VALIDATION
+    # ------------------------------------------------------------------------------------------------------------------------------
+    print(f"--------------- END POSE NETWORK VALIDATION ------------")
+
+    # ------------------------------------------------------------------------------------------------------------------------------
+    #             INFER REAL US IMGS THROUGH THE CUT+POSE NET - INFER THE WHOLE TEST SET
+    # ------------------------------------------------------------------------------------------------------------------------------
+    if hparams.stopping_crit_gt_imgs and epoch > hparams.epochs_check_stopp_crit:
+        print(f"--------------- INFERENCE: WHOLE TEST US GT IMGS  ------------")
+        infer_whole_dataset(cut_model, epoch, hparams, module, plotter, real_us_gt_test_dataloader)
+
+
+def infer_whole_dataset(cut_model, epoch, hparams, module, plotter, real_us_gt_test_dataloader):
+    gt_test_imgs_plot_figs = []
+    testset_losses = []
     # Ensure no gradient computation for performance during inference
     with torch.no_grad():
         # Loop over the real US test data
@@ -508,7 +503,7 @@ def infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hparams, modul
             reconstructed_us_testset = (reconstructed_us_testset / 2) + 0.5
 
             # Forward pass through pose regression model
-            losses, pose_pred = module.pose_forward(reconstructed_us_testset, real_label)
+            losses, pose_pred = module.pose_forward(reconstructed_us_testset, real_label)  # todo: add ct_id here as well
             testset_loss = losses['sum_loss']
             testset_losses.append(testset_loss)
 
@@ -559,11 +554,12 @@ def infer_whole_dataset(cut_model, epoch, gt_test_imgs_plot_figs, hparams, modul
             gt_test_imgs_plot_figs = []
 
 
-def check_early_stopping(avg_stopp_crit_loss, cut_model, early_stopping, epoch, hparams, module, plotter,
-                         real_us_stopp_crit_dataloader, sopp_crit_imgs_plot_figs, stoppcrit_losses):
+def check_early_stopping(cut_model, early_stopping, epoch, hparams, module, plotter,
+                         real_us_dataloader, sopp_crit_imgs_plot_figs, stoppcrit_losses):
+    avg_stopp_crit_loss = 1
     with torch.no_grad():
-        for nr, batch_data_real_us_stopp_crit in tqdm(enumerate(real_us_stopp_crit_dataloader),
-                                                      total=len(real_us_stopp_crit_dataloader), ncols=100,
+        for nr, batch_data_real_us_stopp_crit in tqdm(enumerate(real_us_dataloader),
+                                                      total=len(real_us_dataloader), ncols=100,
                                                       position=0, leave=True):
 
             real_us_img, real_us_label = batch_data_real_us_stopp_crit[0].to(
@@ -572,7 +568,7 @@ def check_early_stopping(avg_stopp_crit_loss, cut_model, early_stopping, epoch, 
 
             reconstructed_us_stopp_crit = (reconstructed_us_stopp_crit / 2) + 0.5  # from [-1,1] to [0,1]
 
-            losses, pose_pred = module.pose_forward(reconstructed_us_stopp_crit, real_us_label)
+            losses, pose_pred = module.pose_forward(reconstructed_us_stopp_crit, real_us_label)  # todo: add ct_id here as well
             stop_crit_loss = losses['sum_loss']
             stoppcrit_losses.append(stop_crit_loss)
 
@@ -603,44 +599,32 @@ def check_early_stopping(avg_stopp_crit_loss, cut_model, early_stopping, epoch, 
         early_stopping(avg_stopp_crit_loss, epoch, module, cut_model.netG)
 
 
-def plot_stop_criteria_figs(epoch, hparams, plotter, stopp_crit_plot_figs,
-                            wasserstein_distance_bw_rendered_idt_reconstr, wasserstein_distance_bw_rendered_reconstr):
-    if hparams.logging:
-        plotter.log_image(torchvision.utils.make_grid(stopp_crit_plot_figs),
-                          "infer_CUT_during_val_|real_us|reconstructed_us|us_rendered")
-
-        wandb.log({"mean_wasserstein_distance_bw_rendered&reconstr_epoch": np.mean(
-            wasserstein_distance_bw_rendered_reconstr), "epoch": epoch})
-        if hparams.use_idtB: wandb.log({
-            "mean_wasserstein_distance_bw_rendered_idt&reconstr_epoch": np.mean(
-                wasserstein_distance_bw_rendered_idt_reconstr),
-            "epoch": epoch})
 
 
 def validation_one_step(
+        val_batch_data_ct,
         USRendereDefParams,
         cut_trainer,
         dataloader_real_us_iterator,
         def_renderer_plot_figs,
         epoch,
         hparams,
-        module,
+        module: PoseRegressionSim,
         nr,
         plotter,
         real_us_train_loader,
         figs_to_plot,
-        val_batch_data_ct,
         valid_losses,
         wasserstein_distance_bw_rendered_idt_reconstr,
         wasserstein_distance_bw_rendered_reconstr
 ):
     # Extract validation data and label
-    val_input, val_label, filename, volume, spacing, direction, origin = module.get_data(val_batch_data_ct)
+    val_input, val_label, filename, volume, spacing, direction, origin, ct, ct_id = module.get_data(val_batch_data_ct)
     val_input_copy = val_input.clone().detach()
 
-    idt_B_val, us_sim = plot_validation_result(USRendereDefParams, cut_trainer, def_renderer_plot_figs,
-                                                          epoch, filename, hparams, module, nr, plotter, val_input,
-                                                          val_input_copy, val_label, valid_losses)
+    idt_B_val, us_sim = plot_validation_result(val_input, val_input_copy, val_label, USRendereDefParams, cut_trainer,
+                                               def_renderer_plot_figs, epoch, filename, hparams, module, nr, plotter,
+                                               valid_losses, ct_id)
 
     # Check stopping criteria for epochs beyond specified threshold
     print(f"--------------- INFER UNLABELLED REAL US IMGS FROM CUT TRAIN SET THROUGH THE POSE NET ------------")
@@ -655,7 +639,7 @@ def validation_one_step(
     cut_trainer.forward_cut_A(real_domain_image)
     reconstructed_us = cut_trainer.cut_model.fake_B
     reconstructed_us = (reconstructed_us / 2) + 0.5  # Convert tensor range from [-1,1] to [0,1]
-    _, pose_pred = module.pose_forward(reconstructed_us, torch.zeros_like(val_label))
+    # _, pose_pred = module.pose_forward(reconstructed_us, torch.zeros_like(val_label), ct_id=ct_id)
 
     wasserstein_distance_bw_rendered_reconstr.append(
         wasserstein_distance(us_sim.cpu().flatten(), reconstructed_us.cpu().flatten()))
@@ -664,33 +648,33 @@ def validation_one_step(
             wasserstein_distance(idt_B_val.cpu().flatten(), reconstructed_us.cpu().flatten()))
 
     if hparams.logging and nr < NR_IMGS_TO_PLOT:
-        no_random_transform = cut_trainer.inference_transformatons()
-        real_domain_image = no_random_transform(real_domain_image)
+        # no_random_transform = cut_trainer.inference_transformatons()
+        # real_domain_image = no_random_transform(real_domain_image)
         real_domain_image = (real_domain_image / 2) + 0.5
 
-        pred_list = ["{:.4f}".format(value) for value in pose_pred.cpu().numpy().tolist()[0]]
+        # pred_list = ["{:.4f}".format(value) for value in pose_pred.cpu().numpy().tolist()[0]]
         plot_fig = plotter.plot_stopp_crit(
             caption="infer_CUT_during_val_|real_us|reconstructed_us|us_rendered",
             imgs=[real_domain_image, reconstructed_us, us_sim],
-            img_text=f'estimated pose: {",".join(pred_list)}',
+            img_text='',
             epoch=epoch,
             plot_single=False
         )
         figs_to_plot.append(plot_fig)
 
 
-def plot_validation_result(USRendereDefParams, cut_trainer, def_renderer_plot_figs, epoch, filename, hparams, module,
-                           nr, plotter, val_input, val_input_copy, val_label, valid_losses):
+def plot_validation_result(val_input, val_input_copy, val_label, USRendereDefParams, cut_trainer, def_renderer_plot_figs, epoch, filename, hparams, module,
+                           nr, plotter,  valid_losses, ct_id):
     # Determine if to use idtB (Identity Translation from Domain B)
     if hparams.use_idtB:
         us_sim = module.rendering_forward(val_input)
         cut_trainer.forward_cut_B(us_sim)
         idt_B_val = cut_trainer.cut_model.idt_B
         idt_B_val = (idt_B_val / 2) + 0.5  # Convert tensor range from [-1,1] to [0,1]
-        losses, pose_pred = module.pose_forward(idt_B_val, val_label)
+        losses, pose_pred = module.pose_forward(idt_B_val, val_label, ct_id=ct_id)
         val_loss_step = losses["sum_loss"]
         if not hparams.log_default_renderer:
-            dict_ = module.plot_val_results(val_input, val_loss_step, filename, val_label, pose_pred, idt_B_val, epoch)
+            dict_ = plot_val_results(val_input, val_loss_step, filename, val_label, pose_pred, idt_B_val, epoch)
     else:
         us_sim = module.rendering_forward(val_input)
         idt_B_val = us_sim
@@ -699,37 +683,37 @@ def plot_validation_result(USRendereDefParams, cut_trainer, def_renderer_plot_fi
         if hparams.debug and hparams.net_input_augmentations_noise_blur:
             us_sim, val_label = add_online_augmentations(hparams, us_sim, val_label, module)
 
-        losses, pose_pred = module.pose_forward(us_sim, val_label)
+        losses, pose_pred = module.pose_forward(us_sim, val_label, ct_id=ct_id)
         val_loss_step = losses["sum_loss"]
         if not hparams.log_default_renderer:
-            dict_ = module.plot_val_results(val_input, val_loss_step, filename, val_label, pose_pred, us_sim, epoch)
+            dict_ = plot_val_results(val_input, val_loss_step, filename, val_label, pose_pred, us_sim, epoch)
     # Append current validation loss
     valid_losses.append(val_loss_step.item())
     # If logging the default renderer and within plotting limits
     if hparams.log_default_renderer and nr < NR_IMGS_TO_PLOT:
         us_sim_def = USRendereDefParams(val_input_copy.squeeze())
-        plot_fig = create_fig(epoch, idt_B_val, plotter, pose_pred, us_sim, us_sim_def, val_input, val_label)
+        plot_fig = create_fig(epoch, idt_B_val, plotter, us_sim, us_sim_def, val_input)
         def_renderer_plot_figs.append(plot_fig)
     elif not hparams.log_default_renderer:
         plotter.validation_batch_end(dict_)
+    if hparams.logging:
+        wandb.log({"val_loss_step": losses})
     return idt_B_val, us_sim
 
 
-def create_fig(epoch, idt_B, plotter, pose_pred, us_sim, us_sim_def, img_input, gt_label):
+def create_fig(epoch, idt_B, plotter, us_sim, us_sim_def, img_input):
     # Convert tensor data to formatted strings
-    gt_label_list = ["{:.4f}".format(value) for value in gt_label.cpu().numpy().tolist()[0]]
-    pred_list = ["{:.4f}".format(value) for value in pose_pred.cpu().numpy().tolist()[0]]
     plot_fig = plotter.plot_stopp_crit(
         caption="default_renderer|labelmap|defaultUS|learnedUS|idtB",
         imgs=[img_input, us_sim_def, us_sim, idt_B],
-        img_text=f'estimated pose: {",".join(pred_list)}, gt pose: {",".join(gt_label_list)}',
+        img_text=f'',
         epoch=epoch,
         plot_single=False
     )
     return plot_fig
 
 
-def train_epoch_full_pipeline(cut_trainer, dataloader_real_us_iterator, epoch, epoch_iter, hparams, inner_model,
+def train_epoch_full_pipeline(cut_trainer: CUTTrainer, dataloader_real_us_iterator, epoch, epoch_iter, hparams, inner_model,
                               iter_data_time, module, only_CUT, only_SEGNET, plotter, step, train_loader_ct_labelmaps,
                               train_losses):
     if only_CUT: only_CUT = False
@@ -765,45 +749,11 @@ def train_epoch_full_pipeline(cut_trainer, dataloader_real_us_iterator, epoch, e
     return only_CUT, only_SEGNET
 
 
-def train_larger_batch_size(batch_loss_list, cut_trainer, dataloader_real_us_iterator, epoch, epoch_iter, hparams, i,
-                            inner_model, iter_data_time, module, plotter, step, train_loader_ct_labelmaps,
-                            train_losses):
-    dataloader_iterator = iter(train_loader_ct_labelmaps)
-    while step < len(train_loader_ct_labelmaps):
-        step += 1
-        module.optimizer.zero_grad()
-        # while step % hparams.batch_size_manual != 0 :
-        data = None
-        while step % hparams.batch_size_manual != 0:
-            data = next(dataloader_iterator)
-
-            input, label = module.get_data(data)
-            loss, us_sim, prediction = module.step(input, label)
-            batch_loss_list.append(loss)
-            step += 1
-            if hparams.logging: wandb.log({"train_loss_step": loss.item()}, step=step)
-            train_losses.append(loss.item())
-
-        loss = torch.mean(torch.stack(batch_loss_list))
-
-        # check_gradients(module)
-        loss.backward()
-        module.optimizer.step()
-        batch_loss_list = []
-
-        print(
-            f"{step}/{len(train_loader_ct_labelmaps.dataset) // train_loader_ct_labelmaps.batch_size}, train_loss: {loss.item():.4f}")
-        if hparams.logging: plotter.log_us_rendering_values(inner_model, step)
-
-        if data is not None:
-            cut_trainer.train_cut(module, data, epoch, dataloader_real_us_iterator, iter_data_time, epoch_iter)
-
-
 def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoch, epoch_iter, hparams, i,
-                   iter_data_time, module, plotter, step, train_losses):
+                   iter_data_time, module: PoseRegressionSim, plotter, step, train_losses):
     step += 1
     module.optimizer.zero_grad()
-    input, label, filename, volume, spacing, direction, origin = module.get_data(batch_data_ct)
+    input, label, filename, volume, spacing, direction, origin, ct, ct_id = module.get_data(batch_data_ct)
     if hparams.use_idtB:  # we know that use_idtB is always true for now
         us_sim = module.rendering_forward(input)
         us_sim_cut = us_sim.clone().detach()
@@ -818,7 +768,7 @@ def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoc
         if hparams.net_input_augmentations_noise_blur:
             idt_B, label = add_online_augmentations(hparams, idt_B, label, module)
 
-        losses, prediction = module.pose_forward(idt_B, label, slice_volume=True, volume_data=volume, spacing=spacing, direction=direction, origin=origin, us_sim_orig=us_sim)
+        losses, prediction = module.pose_forward(idt_B, label, slice_volume=True, volume_data=volume, spacing=spacing, direction=direction, origin=origin, us_sim_orig=us_sim, ct_data=ct, ct_id=ct_id)
         loss = losses['sum_loss']
 
         if hparams.inner_model_learning_rate == 0:
@@ -834,7 +784,7 @@ def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoc
         us_sim = module.rendering_forward(input)
         if hparams.net_input_augmentations_noise_blur:
             us_sim, label = add_online_augmentations(hparams, us_sim, label, module)
-        losses, prediction = module.pose_forward(us_sim, label)
+        losses, prediction = module.pose_forward(us_sim, label, slice_volume=True, volume_data=volume, spacing=spacing, direction=direction, origin=origin, us_sim_orig=us_sim, ct_data=ct, ct_id=ct_id)
         loss = losses['sum_loss']
         # check_gradients(module)
         # with torch.autograd.detect_anomaly():
