@@ -13,8 +13,11 @@ on_polyaxon: False
 # ================================
 base_folder_data_path: /mnt/projects/aorta_scan/random_simulated_ultrasound/
 data_dir_real_us_cut_training: /mnt/projects/liver_scan/us_scans_Jun/2D_only/filtered/
-data_dir_real_us_test: /home/farid/Desktop/phantom_simulated_data/  # TODO: Change to test set
-data_dir_real_us_stopp_crit: /home/farid/Desktop/phantom_simulated_data/  # TODO: Check with Dani
+data_dir_real_us_test: /mnt/projects/liver_scan/phantom_data/phantom_simulated_data/  # TODO: Change to test set
+data_dir_real_us_stopp_crit: /mnt/projects/liver_scan/phantom_data/phantom_simulated_data/  # TODO: Check with Dani
+data_dir_real_us_phantom: /mnt/projects/liver_scan/phantom_data/phantom_real_data/
+data_dir_slice_ct_phantom: /mnt/projects/liver_scan/phantom_data/phantom_sliced_segmentation/
+
 output_path: ./checkpoints  # TODO: Change to NAS
 image_size: 256
 

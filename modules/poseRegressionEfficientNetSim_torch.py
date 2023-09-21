@@ -82,13 +82,24 @@ def plot_val_results(input, loss, file_name, label, pred, us_sim_resized,
 
 
 def geodesic_loss(q1, q2):
+
+    # theta = cos^{-1}(2 <q_1,q_2>^2 -1)
+    # https://math.stackexchange.com/questions/90081/quaternion-distance
+    # Or approximated by:
+    # d(q1,q2) = 1 - <q1,q2>^2
+
     # Calculate the dot product between the two quaternions
     dot_product = (q1 * q2).sum(dim=1)
+
     # Clamp the values to avoid numerical instability
     dot_product = torch.clamp(dot_product, -1.0, 1.0)
+
+    distance = 1 - dot_product ** 2
+    return distance.mean()  # todo check this loss
+
     # Calculate the angle between the two quaternions
-    angle = torch.acos(dot_product)
-    return angle.mean()
+    # angle = torch.acos(2 * (dot_product ** 2) - 1)
+    # return angle.mean()  # todo check this loss
 
 
 def slice_volume_from_pose(pose, ct_volume: sitk.Image, us_sim, spacing: tuple,
@@ -198,11 +209,13 @@ class PoseRegressionSim(torch.nn.Module):
         print('USRenderingModel On cuda?: ', next(self.USRenderingModel.parameters()).is_cuda)
 
     def pose_loss(self, predicted_poses, gt_poses):
-        normalized_rot = torch.nn.functional.normalize(predicted_poses[:, -4:], p=2, dim=1)
+        norm_ = torch.norm(predicted_poses[:, -4:], p=2, dim=1)
+        loss_norm = torch.pow(norm_ - 1, 2).mean()
+        normalized_rot = predicted_poses[:, -4:] / norm_.detach()  #torch.nn.functional.normalize(predicted_poses[:, -4:], p=2, dim=1)
         loss_rot = geodesic_loss(normalized_rot, gt_poses[:, -4:])
         loss_trans = torch.nn.functional.mse_loss(predicted_poses[:, :3],
-                                                  gt_poses[:, :3] / self.translation_normalization_coeff)
-        losses = {'loss_rot': loss_rot, 'loss_trans': loss_trans}
+                                                  gt_poses[:, :3]) / self.translation_normalization_coeff ** 2
+        losses = {'loss_rot': loss_rot, 'loss_trans': loss_trans, 'loss_norm': loss_norm}
         # self.log('train_loss', loss, on_step=True, on_epoch=True)  # todo: add logging later
         return losses
 
@@ -216,11 +229,32 @@ class PoseRegressionSim(torch.nn.Module):
 
         return us_sim_resized
 
+    def initiate_pose_net_for_phantom_test(self):
+
+        # 1. Accumulate the weights
+        accumulated_weights = {}
+        for model in self.outer_model.fc_layers[:-1]:
+            for name, param in model.named_parameters():
+                if name not in accumulated_weights:
+                    accumulated_weights[name] = param.data.clone()
+                else:
+                    accumulated_weights[name] += param.data
+
+        # 2. Compute the average
+        num_models = len(self.outer_model.fc_layers) - 1
+        for name in accumulated_weights:
+            accumulated_weights[name] /= num_models
+
+        # 3. Initialize a new model with the averaged weights
+        for name, param in self.outer_model.fc_layers[-1].named_parameters():
+            param.data.copy_(accumulated_weights[name])
+
     def pose_forward(self, us_sim, pose_gt, slice_volume=False, volume_data=None, spacing=None, direction=None,
                      origin=None, us_sim_orig=None, ct_data=None, ct_id=0):
         output = self.outer_model.forward(us_sim, ct_id=ct_id)
         losses = self.pose_loss(output, pose_gt)
 
+        # slice_volume = False
         if slice_volume:
             ct_volume = sitk.GetImageFromArray(ct_data.squeeze())
             spacing = [s.numpy().item() for s in spacing]
@@ -242,15 +276,15 @@ class PoseRegressionSim(torch.nn.Module):
             # since the slicing is not differentiable, and we need to detach the pose model output
             lcc_ratio = lcc_pred / lcc_gt
             gc_ratio = gc_pred.detach() / gc_gt
-        else:
-            # initialize all to zero in one line
-            lcc_ratio, gc_ratio, lcc_gt, gc_gt, lcc_pred, gc_pred = [torch.tensor(0, device=us_sim.device) for _ in
-                                                                     range(6)]
 
-        sum_loss = (losses['loss_rot'] + losses['loss_trans']) * 10.0 + gc_pred + gc_gt
-        slicing_losses = {'lcc_gt': lcc_gt, 'lcc_pred': lcc_pred, 'gc_gt': gc_gt, 'gc_pred': gc_pred,
-                          'lcc_ratio': lcc_ratio, 'gc_ratio': gc_ratio, 'sum_loss': sum_loss}
-        losses.update(slicing_losses)
+            sum_loss = (losses['loss_rot'] + losses['loss_trans']) * 10.0 + losses['loss_norm'] + gc_pred + gc_gt
+            slicing_losses = {'lcc_gt': lcc_gt, 'lcc_pred': lcc_pred, 'gc_gt': gc_gt, 'gc_pred': gc_pred,
+                              'lcc_ratio': lcc_ratio, 'gc_ratio': gc_ratio, 'sum_loss': sum_loss}
+            losses.update(slicing_losses)
+        else:
+            sum_loss = (losses['loss_rot'] + losses['loss_trans']) * 10.0 + losses['loss_norm']
+            losses.update({'sum_loss': sum_loss})
+
         pred = output
 
         return losses, pred

@@ -16,6 +16,8 @@ def build_configargparser(parser):
     parser.add_argument("--data_dir_real_us_cut_training", default="", required=False, type=str)
     parser.add_argument("--data_dir_real_us_test", default="", required=False, type=str)
     parser.add_argument("--data_dir_real_us_stopp_crit", default="", required=False, type=str)
+    parser.add_argument("--data_dir_real_us_phantom", default="", required=False, type=str)
+    parser.add_argument("--data_dir_slice_ct_phantom", default="", required=False, type=str)
 
     parser.add_argument("--output_path", type=str, default="logs")
     parser.add_argument("--device", type=str, required=False, default="cuda")

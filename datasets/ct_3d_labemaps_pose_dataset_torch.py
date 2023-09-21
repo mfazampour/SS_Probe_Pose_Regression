@@ -120,13 +120,13 @@ class CT3DLabelmapPoseDataset(Dataset):
         self.transform_img = transforms.Compose([
             transforms.ToTensor(),
             # transforms.RandomAffine(degrees=(0, 30), translate=(0.2, 0.2), scale=(1.0, 2.0), fill=9),
-            transforms.Resize([SIZE_W, SIZE_H], transforms.InterpolationMode.NEAREST),
+            transforms.Resize(img_shape, transforms.InterpolationMode.NEAREST),
             # transforms.RandomVerticalFlip()
         ])
 
     def __len__(self):
         if self.params.debug:
-            return self.total_slices.__len__() // 100  # for debugging
+            return self.total_slices.__len__() // 300  # for debugging
         else:
             return self.total_slices.__len__()
 
