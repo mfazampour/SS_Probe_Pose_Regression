@@ -14,6 +14,7 @@ from torch import nn
 from utils.helpers import AddGaussianNoise
 from models.unet_2d_github import dice_loss
 from torch.optim.lr_scheduler import StepLR
+from kornia.geometry.conversions import euler_from_quaternion
 
 from datasets.imfusion_free_slicing.slice_volume import interpolate_arbitrary_plane
 from datasets.imfusion_free_slicing.ultrasound_fan import create_ultrasound_mask
@@ -210,13 +211,19 @@ class PoseRegressionSim(torch.nn.Module):
 
     def pose_loss(self, predicted_poses, gt_poses):
         norm_ = torch.norm(predicted_poses[:, -4:], p=2, dim=1)
-        loss_norm = torch.pow(norm_ - 1, 2).mean()
+        loss_norm = torch.pow(norm_, 2).mean()
         normalized_rot = predicted_poses[:, -4:] / norm_.detach()  #torch.nn.functional.normalize(predicted_poses[:, -4:], p=2, dim=1)
         loss_rot = geodesic_loss(normalized_rot, gt_poses[:, -4:])
+
+        # euler angles loss
+        predicted_euler = euler_from_quaternion(x=normalized_rot[0, 0], y=normalized_rot[0, 1], z=normalized_rot[0, 2], w=normalized_rot[0, 3])
+        gt_euler = euler_from_quaternion(x=gt_poses[0, -4], y=gt_poses[0, -3], z=gt_poses[0, -2], w=gt_poses[0, -1])
+        [loss_yaw, loss_pitch, loss_roll] = (torch.tensor(predicted_euler) - torch.tensor(gt_euler)).abs()
+
         loss_trans = torch.nn.functional.mse_loss(predicted_poses[:, :3],
                                                   gt_poses[:, :3]) / self.translation_normalization_coeff ** 2
-        losses = {'loss_rot': loss_rot, 'loss_trans': loss_trans, 'loss_norm': loss_norm}
-        # self.log('train_loss', loss, on_step=True, on_epoch=True)  # todo: add logging later
+        losses = {'loss_rot': loss_rot, 'loss_trans': loss_trans, 'loss_norm': loss_norm,
+                   'loss_yaw': loss_yaw, 'loss_pitch': loss_pitch, 'loss_roll': loss_roll}
         return losses
 
     def normalize(self, img):
@@ -254,7 +261,7 @@ class PoseRegressionSim(torch.nn.Module):
         output = self.outer_model.forward(us_sim, ct_id=ct_id)
         losses = self.pose_loss(output, pose_gt)
 
-        # slice_volume = False
+        slice_volume = False  # todo: remove this to enable volume slicing
         if slice_volume:
             ct_volume = sitk.GetImageFromArray(ct_data.squeeze())
             spacing = [s.numpy().item() for s in spacing]
@@ -278,9 +285,10 @@ class PoseRegressionSim(torch.nn.Module):
             gc_ratio = gc_pred.detach() / gc_gt
 
             sum_loss = (losses['loss_rot'] + losses['loss_trans']) * 10.0 + losses['loss_norm'] + gc_pred + gc_gt
-            slicing_losses = {'lcc_gt': lcc_gt, 'lcc_pred': lcc_pred, 'gc_gt': gc_gt, 'gc_pred': gc_pred,
-                              'lcc_ratio': lcc_ratio, 'gc_ratio': gc_ratio, 'sum_loss': sum_loss}
-            losses.update(slicing_losses)
+            # slicing_losses = {'lcc_gt': lcc_gt, 'lcc_pred': lcc_pred, 'gc_gt': gc_gt, 'gc_pred': gc_pred,
+            #                   'lcc_ratio': lcc_ratio, 'gc_ratio': gc_ratio, 'sum_loss': sum_loss}
+            # losses.update(slicing_losses)
+            losses.update({'sum_loss': sum_loss})
         else:
             sum_loss = (losses['loss_rot'] + losses['loss_trans']) * 10.0 + losses['loss_norm']
             losses.update({'sum_loss': sum_loss})

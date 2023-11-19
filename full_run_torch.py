@@ -2,6 +2,7 @@ import logging
 import sys
 import numpy as np
 import torch
+import torchvision
 import wandb
 # from tensorboardX import SummaryWriter
 # import monai
@@ -32,9 +33,10 @@ def check_gradients(net):
 
 
 def training_loop_pose_net(hparams, module, batch_size, train_loader, train_losses, plotter, cut_trainer, simulated=False, epoch=0):
-    step = 0
+    # step = 0
+    figs_to_plot = []
     for batch_data in tqdm(train_loader, total=len(train_loader), ncols=100):
-        step += 1
+        # step += 1
 
         # loss, _ = module.training_step(batch_data)
         # input, label = module.get_data(batch_data)
@@ -43,9 +45,10 @@ def training_loop_pose_net(hparams, module, batch_size, train_loader, train_loss
         input, pose_gt, file_name, volume, spacing, direction, origin, ct, ct_id = module.get_data(batch_data)
 
         if simulated:
-            input = module.rendering_forward(input)
-
-        cut_trainer.forward_cut_B(input)
+            rendered = module.rendering_forward(input)
+            cut_trainer.forward_cut_B(rendered)
+        else:
+            cut_trainer.forward_cut_B(input)
         idt_B = cut_trainer.cut_model.idt_B
         # idt_B = idt_B.clone()
         idt_B = (idt_B / 2) + 0.5  # from [-1,1] to [0,1]
@@ -65,7 +68,22 @@ def training_loop_pose_net(hparams, module, batch_size, train_loader, train_loss
         train_losses.append(loss.item())
 
         if hparams.logging:
-            plotter.log_us_rendering_values(module.USRenderingModel, step)  # todo: check if step is needed
+            # plotter.log_us_rendering_values(module.USRenderingModel, step)  # todo: check if step is needed
+
+            if simulated and len(figs_to_plot) < 16:
+                plot_fig = plotter.plot_stopp_crit(
+                    caption="phantom_slice|slice|us_rendered|idt_B",
+                    imgs=[input, rendered, idt_B],
+                    img_text='',
+                    epoch=epoch,
+                    plot_single=False
+                )
+                figs_to_plot.append(plot_fig)
+
+    # plot all figs
+    if hparams.logging and len(figs_to_plot) > 0:
+        plotter.log_image(torchvision.utils.make_grid(figs_to_plot),
+                          "phantom_slice|slice|us_rendered|idt_B")
 
 
 

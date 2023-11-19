@@ -110,24 +110,25 @@ class PhantomPoseRegressionDataset(Dataset):
     def __getitem__(self, idx):
         us_image_path = self.paths_imgs[idx]
         if self.loading_slice:
-            us_image = Image.open(us_image_path).convert('I')
+            image_ = Image.open(us_image_path).convert('I')
         else:
-            us_image = Image.open(us_image_path).convert('L')  # Load as grayscale
-        us_image = self.preprocess(us_image)
+            image_ = Image.open(us_image_path).convert('L')  # Load as grayscale
+        image_ = self.preprocess(image_)
 
         if self.loading_slice:
-            us_image[us_image == 0] = 4
-            us_image[us_image == 15] = 4
-            us_image = us_image.to(torch.int64)
+            image_ = image_.permute(0, 2, 1)
+            image_[image_ == 0] = 4
+            image_[image_ == 15] = 4
+            image_ = image_.to(torch.int64)
 
         us_pose = torch.tensor(self.poses.iloc[idx, :16].values.astype('float'))
 
         relative_pose = self.calculate_relative_pose(us_pose)
 
         if self.transform:
-            us_image = self.transform(us_image)
+            image_ = self.transform(image_)
 
-        return us_image, relative_pose, us_image_path.__str__(), 0.0, 0.0, 0.0, 0.0, 0.0, self.ct_id
+        return image_, relative_pose, us_image_path.__str__(), 0.0, 0.0, 0.0, 0.0, 0.0, self.ct_id
 
 
 class PhantomPoseRegressionDataLoader():

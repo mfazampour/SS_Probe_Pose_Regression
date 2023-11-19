@@ -113,7 +113,7 @@ class CUTTrainer():
 
     #     return label
 
-    def train_cut(self, us_sim_resized, epoch, dataloader_real_us_iterator, iter_data_time, epoch_iter):
+    def train_cut(self, us_sim_resized, epoch, dataloader_real_us_iterator, iter_data_time):
 
         try:
             self.data_cut_real_us = next(dataloader_real_us_iterator)
@@ -122,12 +122,13 @@ class CUTTrainer():
             self.data_cut_real_us = next(dataloader_real_us_iterator)
 
         self.random_state = torch.get_rng_state()
-        self.data_cut_real_us["A"] = self.cut_transform(self.data_cut_real_us["A"]).to(hparams.device)
-        # self.data_cut_real_us["A"] = self.data_cut_real_us["A"].to(hparams.device)
+        if self.data_cut_real_us["A"].min() > 0:
+            self.data_cut_real_us["A"] = self.cut_transform(self.data_cut_real_us["A"]).to(hparams.device)
+        else:
+            self.data_cut_real_us["A"] = self.data_cut_real_us["A"].to(hparams.device)
 
         real_us_batch_size = self.data_cut_real_us["A"].size(0)
         self.total_iter += real_us_batch_size
-        epoch_iter += real_us_batch_size
 
         # transform_B = self.cut_transform    #cut_get_transform(opt_cut, grayscale=False, convert=False, us_sim_flip=True)    #it is already grayscale and tensor
         torch.set_rng_state(self.random_state)
@@ -145,7 +146,7 @@ class CUTTrainer():
             self.cut_model.setup(self.opt_cut)  # regular setup: load and print networks; create schedulers
             self.cut_model.parallelize()
 
-            if os.path.exists(os.path.join(hparams.output_path, hparams.exp_name, f'module_latest.pth')):
+            if os.path.exists(os.path.join(hparams.output_path, hparams.exp_name, f'latest_net_D.pth')):
                 self.cut_model.save_dir = os.path.join(hparams.output_path, hparams.exp_name)
                 self.cut_model.load_networks('latest')
                 print("Loaded cut_model_latest.pth")
@@ -176,11 +177,11 @@ class CUTTrainer():
             self.cut_plot_figs.append(
                 plotter.plot_images(self.cut_model.get_current_visuals(), epoch, wandb, plot_single=False))
             losses = self.cut_model.get_current_losses()
-            self.opt_cut.visualizer.print_current_losses(epoch, epoch_iter, losses, self.optimize_time, self.t_data,
+            self.opt_cut.visualizer.print_current_losses(epoch, self.total_iter, losses, self.optimize_time, self.t_data,
                                                          wandb)
 
 
-def load_model(model):
+def load_model_class(model):
     # ------------------------
     # LOAD MODEL
     # ------------------------
@@ -230,8 +231,6 @@ def main(opt_cut, hparams, plotter, visualizer):
 
     train_losses, valid_losses, testset_losses, stoppcrit_losses, avg_train_losses, avg_valid_losses, avg_pred_mean_diff = (
         [] for i in range(7))
-    # G_train_losses, D_train_losses, D_real_train_losses, D_fake_train_losses = ([] for i in range(4))
-    # G_val_losses, D_val_losses, D_real_val_losses, D_fake_val_losses = ([] for i in range(4))
 
     # --------------------
     # RUN TRAINING
@@ -244,7 +243,6 @@ def main(opt_cut, hparams, plotter, visualizer):
     phantom_slice_epoch, phantom_us_epoch = 0, 0
     for epoch in trange(1, hparams.max_epochs + 1):
 
-        epoch_iter = 0
         opt_cut.visualizer.reset()
         iter_data_time = time.time()  # timer for data loading per iteration
 
@@ -254,36 +252,15 @@ def main(opt_cut, hparams, plotter, visualizer):
         module.outer_model.train()
         module.USRenderingModel.train()
 
-        # ------------------------------------------------------------------------------------------------------------------------------
-        #                                         Train POSE NET only
-        # ------------------------------------------------------------------------------------------------------------------------------
-        #### this is not used now
-        if epoch <= hparams.epochs_only_pose_net and hparams.epochs_only_pose_net > 0:
-            # print(f"--------------- INIT SEG NET ------------", cut_trainer.total_iter)
-            training_loop_pose_net(hparams, module, hparams.batch_size_manual, train_loader_ct_labelmaps, train_losses,
-                                   plotter, )  # todo: change this to pose net
-
-        # opt_cut.isTrain = True
-        # ------------------------------------------------------------------------------------------------------------------------------
-        #                                         Train CUT only
-        # ------------------------------------------------------------------------------------------------------------------------------
-        if epoch <= hparams.epochs_only_cut and hparams.epochs_only_cut > 0:
-            for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps),
-                                         ncols=100, position=0, leave=True):
-                # print(f"--------------- INIT CUT ------------", cut_trainer.total_iter)
-                # cut_trainer.train_cut(module, batch_data_ct, epoch, dataloader_real_us_iterator, iter_data_time,
-                #                       epoch_iter)
-                # throw an exception, not implemented yet
-                raise NotImplementedError
+        # obsolete_training_parts(cut_trainer, dataloader_real_us_iterator, epoch, hparams, iter_data_time, module,
+        #                         plotter, train_loader_ct_labelmaps, train_losses)
 
         # ------------------------------------------------------------------------------------------------------------------------------
         #                                         Train US Renderer + SEG NET + CUT
         # ------------------------------------------------------------------------------------------------------------------------------
         if epoch > hparams.epochs_only_pose_net:
-            only_CUT, only_SEGNET = train_epoch_full_pipeline(cut_trainer, dataloader_real_us_iterator, epoch,
-                                                              epoch_iter, hparams, iter_data_time, module, only_CUT,
-                                                              only_SEGNET, plotter, step, train_loader_ct_labelmaps,
-                                                              train_losses)
+            train_epoch_full_pipeline(cut_trainer, dataloader_real_us_iterator, epoch, hparams, iter_data_time, module,
+                                      plotter, step, train_loader_ct_labelmaps, train_losses)
 
         print(f"--------------- ONLY CUT: {only_CUT} -------------- epoch: ", epoch)
         print(f"--------------- ONLY SEGNET: {only_SEGNET} -------------- epoch: ", epoch)
@@ -330,6 +307,31 @@ def main(opt_cut, hparams, plotter, visualizer):
     print(
         f'train completed, avg_train_losses: {np.mean(avg_train_losses)} avg_valid_losses: {np.mean(avg_valid_losses)}')
     print(f'best val_loss: {early_stopping.val_loss_min} at best_epoch: {early_stopping.best_epoch}')
+
+
+def obsolete_training_parts(cut_trainer, dataloader_real_us_iterator, epoch, hparams, iter_data_time, module, plotter,
+                            train_loader_ct_labelmaps, train_losses):
+    # ------------------------------------------------------------------------------------------------------------------------------
+    #                                         Train POSE NET only
+    # ------------------------------------------------------------------------------------------------------------------------------
+    #### this is not used now
+    if epoch <= hparams.epochs_only_pose_net and hparams.epochs_only_pose_net > 0:
+        # print(f"--------------- INIT SEG NET ------------", cut_trainer.total_iter)
+        # training_loop_pose_net(hparams, module, hparams.batch_size_manual, train_loader_ct_labelmaps, train_losses,
+        #                        plotter, )  # todo: change this to pose net
+        raise NotImplementedError
+    # opt_cut.isTrain = True
+    # ------------------------------------------------------------------------------------------------------------------------------
+    #                                         Train CUT only
+    # ------------------------------------------------------------------------------------------------------------------------------
+    if epoch <= hparams.epochs_only_cut and hparams.epochs_only_cut > 0:
+        for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps),
+                                     ncols=100, position=0, leave=True):
+            # print(f"--------------- INIT CUT ------------", cut_trainer.total_iter)
+            # cut_trainer.train_cut(module, batch_data_ct, epoch, dataloader_real_us_iterator, iter_data_time,
+            #                       epoch)
+            # throw an exception, not implemented yet
+            raise NotImplementedError
 
 
 def save_models(cut_trainer, epoch, hparams, module):
@@ -423,8 +425,6 @@ def run_test_on_phantom(module, phantom_slice_dataloader, phantom_us_dataloader,
             avg_losses = calculate_average_loss(all_losses)
             wandb.log({"phantom_us_loss_epoch": avg_losses, "phantom_us_epoch": phantom_us_epoch})
 
-
-
     phantom_us_epoch += 1
     return phantom_slice_epoch, phantom_us_epoch
 
@@ -441,7 +441,8 @@ def prepare_for_training(hparams, opt_cut):
     tuple: containing models, datasets, loaders, trainers, and early stopping handlers.
     """
 
-    dataloader, dataset_real_us, phantom_slice_dataloader, phantom_us_dataloader, real_us_gt_test_dataloader, real_us_stopp_crit_dataloader, real_us_train_loader, train_loader_ct_labelmaps, val_loader_ct_labelmaps = load_data(
+    dataloader, dataset_real_us, phantom_slice_dataloader, phantom_us_dataloader, real_us_gt_test_dataloader,\
+        real_us_stopp_crit_dataloader, real_us_train_loader, train_loader_ct_labelmaps, val_loader_ct_labelmaps = load_data(
         hparams, opt_cut)
 
     USRendereDefParams, cut_trainer, module = load_models(dataloader, dataset_real_us, hparams, opt_cut,
@@ -486,7 +487,7 @@ def load_models(dataloader, dataset_real_us, hparams, opt_cut, real_us_train_loa
     cut_model = cut_create_model(opt_cut)
     # Load module and model classes
     ModuleClass = PoseRegressionSim  # load_module(hparams.module)
-    InnerModelClass = load_model(hparams.inner_model)
+    InnerModelClass = load_model_class(hparams.inner_model)
     # Initialize inner model with hyperparameters
     inner_model = InnerModelClass(params=hparams)
     # Initialize Ultrasound Rendering with default parameters and set to device
@@ -539,12 +540,12 @@ def load_data(hparams, opt_cut):
                                                          img_size=(hparams.image_size, hparams.image_size),
                                                          number_of_cts=dataloader.full_dataset.number_of_cts,
                                                          debug=hparams.debug, loading_slice=True)
-    phantom_slice_dataloader = torch.utils.data.DataLoader(phantom_slice_dataset, shuffle=False)
+    phantom_slice_dataloader = torch.utils.data.DataLoader(phantom_slice_dataset, shuffle=True)
     phantom_us_dataset = PhantomPoseRegressionDataset(root_dir=hparams.data_dir_real_us_phantom,
                                                       img_size=(hparams.image_size, hparams.image_size),
                                                       number_of_cts=dataloader.full_dataset.number_of_cts,
                                                       debug=hparams.debug, loading_slice=False)
-    phantom_us_dataloader = torch.utils.data.DataLoader(phantom_us_dataset, shuffle=False)
+    phantom_us_dataloader = torch.utils.data.DataLoader(phantom_us_dataset, shuffle=True)
     return dataloader, dataset_real_us, phantom_slice_dataloader, phantom_us_dataloader, real_us_gt_test_dataloader, real_us_stopp_crit_dataloader, real_us_train_loader, train_loader_ct_labelmaps, val_loader_ct_labelmaps
 
 
@@ -843,18 +844,16 @@ def create_fig(epoch, idt_B, plotter, us_sim, us_sim_def, img_input):
     return plot_fig
 
 
-def train_epoch_full_pipeline(cut_trainer: CUTTrainer, dataloader_real_us_iterator, epoch, epoch_iter, hparams,
-                              iter_data_time, module, only_CUT, only_SEGNET, plotter, step, train_loader_ct_labelmaps,
+def train_epoch_full_pipeline(cut_trainer: CUTTrainer, dataloader_real_us_iterator, epoch, hparams,
+                              iter_data_time, module, plotter, step, train_loader_ct_labelmaps,
                               train_losses):
-    if only_CUT: only_CUT = False
-    if only_SEGNET: only_SEGNET = False
     step += 1
     batch_loss_list = []
     if hparams.batch_size_manual == 1:  # if batch==1, for now this is always true
         for i, batch_data_ct in tqdm(enumerate(train_loader_ct_labelmaps), total=len(train_loader_ct_labelmaps),
                                      ncols=100, desc=f"training epoch {epoch}:"):
-            train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoch, epoch_iter, hparams,
-                           i, iter_data_time, module, plotter, step, train_losses)
+            train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoch, hparams, i, iter_data_time,
+                           module, plotter, step, train_losses)
 
     else:  # if batch>1  # this is not called for now
         # throw an exception if batch_size_manual is not 1
@@ -871,10 +870,8 @@ def train_epoch_full_pipeline(cut_trainer: CUTTrainer, dataloader_real_us_iterat
         plotter.log_image(torchvision.utils.make_grid(cut_trainer.cut_plot_figs), "real_A|fake_B|real_B|idt_B")
         cut_trainer.cut_plot_figs = []
 
-    return only_CUT, only_SEGNET
 
-
-def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoch, epoch_iter, hparams, i,
+def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoch, hparams, i,
                    iter_data_time, module: PoseRegressionSim, plotter, step, train_losses):
     step += 1
     module.optimizer.zero_grad()
@@ -882,7 +879,7 @@ def train_one_step(batch_data_ct, cut_trainer, dataloader_real_us_iterator, epoc
     if hparams.use_idtB:  # we know that use_idtB is always true for now
         us_sim = module.rendering_forward(input)
         us_sim_cut = us_sim.clone().detach()
-        cut_trainer.train_cut(us_sim_cut, epoch, dataloader_real_us_iterator, iter_data_time, epoch_iter)
+        cut_trainer.train_cut(us_sim_cut, epoch, dataloader_real_us_iterator, iter_data_time)
 
         # label = cut_trainer.forward_cut_B(us_sim, label)
         cut_trainer.forward_cut_B(us_sim)

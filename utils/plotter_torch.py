@@ -233,7 +233,7 @@ class Plotter():
         for map, dict in zip(us_rendering_maps, us_rendering_values):
             for label, value in zip(inner_model.labels, dict):
                 wandb.log({map+label: value}, commit=False)
-            wandb.log({"step": step})
+            # wandb.log({"step": step})
 
 
 

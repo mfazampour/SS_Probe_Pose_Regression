@@ -1,22 +1,22 @@
 # ================================
 # BASIC CONFIGURATIONS
 # ================================
-debug: True
-exp_name: pose_regression_base_multihead_phantom_only_
+debug: False
+exp_name: pose_regression_high_cut_
 project_name: PRIUS_2           # Name of the WandB project
 device: cuda
-logging: False
+logging: True
 on_polyaxon: False
 
 # ================================
 # DATA DIRECTORIES & PATHS
 # ================================
-base_folder_data_path: /mnt/projects/aorta_scan/random_simulated_ultrasound/
-data_dir_real_us_cut_training: /mnt/projects/liver_scan/phantom_data/phantom_real_data/2d_images/ #/mnt/projects/liver_scan/us_scans_Jun/2D_only/filtered/
-data_dir_real_us_test: /mnt/projects/liver_scan/phantom_data/phantom_simulated_data/  # TODO: Change to test set
-data_dir_real_us_stopp_crit: /mnt/projects/liver_scan/phantom_data/phantom_simulated_data/  # TODO: Check with Dani
-data_dir_real_us_phantom: /mnt/projects/liver_scan/phantom_data/phantom_real_data/
-data_dir_slice_ct_phantom: /mnt/projects/liver_scan/phantom_data/phantom_sliced_segmentation/
+base_folder_data_path: /home/guests/farid_azampour/prius_data/random_simulated_ultrasound/
+data_dir_real_us_cut_training: /home/guests/farid_azampour/prius_data/2D_only_filtered/
+data_dir_real_us_test: /home/guests/farid_azampour/prius_data/phantom_simulated_data/  # TODO: Change to test set
+data_dir_real_us_stopp_crit: /home/guests/farid_azampour/prius_data/phantom_simulated_data/  # TODO: Check with Dani
+data_dir_real_us_phantom: /home/guests/farid_azampour/prius_data/phantom_real_data/
+data_dir_slice_ct_phantom: /home/guests/farid_azampour/prius_data/phantom_sliced_segmentation/
 
 output_path: ./checkpoints  # TODO: Change to NAS
 image_size: 256
@@ -47,7 +47,7 @@ warp_img: True
 num_workers: 0  # Previously: 24
 batch_size: 1
 batch_size_manual: 1
-inner_model_learning_rate: 0 #0.0005
+inner_model_learning_rate: 0.0005
 outer_model_learning_rate: 0.0001
 scheduler: False
 grad_clipping: False
